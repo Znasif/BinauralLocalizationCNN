@@ -259,7 +259,7 @@ def load_tfrecord_sample(tfrecord_path, sample_index=0):
         cochleagram: Array of shape (39, n_samples, 2)
         metadata: Dictionary with azimuth, elevation, etc.
     """
-    options = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.GZIP)
+    options = tf.io.TFRecordOptions(tf.compat.v1.python_io.TFRecordCompressionType.GZIP)
     
     count = 0
     for serialized_example in tf.python_io.tf_record_iterator(tfrecord_path, options=options):

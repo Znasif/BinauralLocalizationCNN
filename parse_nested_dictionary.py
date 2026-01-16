@@ -34,8 +34,8 @@ def parse_nested_dictionary(jsdict,is_bkgd):
                 feature_len = len(v[x][y]['value'])
                 shape = [] if feature_len == 1 else [feature_len]
                 if is_bkgd is True and (x == 'train/azim' or x == 'train/elev'):
-                    feature[x] = tf.VarLenFeature(dtype)
+                    feature[x] = tf.io.VarLenFeature(dtype)
                 else:
-                    feature[x] = tf.FixedLenFeature(shape,dtype)
+                    feature[x] = tf.io.FixedLenFeature(shape,dtype)
 
     return feature

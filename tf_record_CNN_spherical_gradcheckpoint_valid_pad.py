@@ -48,7 +48,7 @@ def write_batch_data(newpath,train_path_pattern,stim,batch_acc,
         json.dump(eval_keys,f)
 
 
-def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq_label,sam_tones,transposed_tones,precedence_effect,narrowband_noise,all_positions_bkgd,background_textures,testing,branched,zero_padded,stacked_channel,model_version,num_epochs,train_path_pattern,bkgd_train_path_pattern,arch_ID,config_array,files,num_files,newpath,regularizer,SNR_max=40,SNR_min=5,batch_size=16):
+def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq_label,sam_tones,transposed_tones,precedence_effect,narrowband_noise,all_positions_bkgd,background_textures,testing,branched,zero_padded,stacked_channel,model_version,num_epochs,train_path_pattern,bkgd_train_path_pattern,arch_ID,config_array,files,num_files,newpath,regularizer,SNR_max=40,SNR_min=5,batch_size=16,batch_callback=None):
 
     bkgd_training_paths = glob.glob(bkgd_train_path_pattern)
     training_paths = glob.glob(train_path_pattern)
@@ -144,7 +144,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
             tensor_dict_fg = {}
             tensor_dict_bkgd = {}
             tensor_dict = {}
-            snr = tf.random_uniform([],minval=SNR_min,maxval=SNR_max,name="snr_gen")
+            snr = tf.random.uniform([],minval=SNR_min,maxval=SNR_max,name="snr_gen")
             for path1 in backgrounds:
                 if path1 == 'train/image':
                     background = backgrounds['train/image']
@@ -193,7 +193,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
             tensor_dict_fg = {}
             tensor_dict_bkgd = {}
             tensor_dict = {}
-            snr = tf.random_uniform([],minval=SNR_min,maxval=SNR_max,name="snr_gen")
+            snr = tf.random.uniform([],minval=SNR_min,maxval=SNR_max,name="snr_gen")
             for path1 in backgrounds:
                 if path1 == 'train/image':
                     background = backgrounds['train/image']
@@ -241,7 +241,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
         #Best to read https://www.tensorflow.org/api_guides/python/reading_data#Reading_from_files
 
 
-        options = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.GZIP)
+        options = tf.io.TFRecordOptions(tf.compat.v1.python_io.TFRecordCompressionType.GZIP)
         is_bkgd = False       
         first = training_paths[0]
         for example in tf.python_io.tf_record_iterator(first,options=options):
@@ -266,7 +266,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
                                                         shuffle=True,
                                                         capacity=len(bkgd_training_paths))
         # Define a reader and read the next record
-        options = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.GZIP)
+        options = tf.io.TFRecordOptions(tf.compat.v1.python_io.TFRecordCompressionType.GZIP)
         bkgd_reader = tf.TFRecordReader(options=options)
         _, bkgd_serialized_example = bkgd_reader.read(bkgd_filename_queue)
 
@@ -288,7 +288,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
 
 
 
-        #SNR = tf.random_uniform([],minval=SNR_min,maxval=SNR_max,name="snr_gen")
+        #SNR = tf.random.uniform([],minval=SNR_min,maxval=SNR_max,name="snr_gen")
         
         
         if stacked_channel:
@@ -461,7 +461,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
         """
 
         grads = [(grad[0] / loss_scale,grad[1]) for grad in
-                 tf.train.AdamOptimizer(learning_rate=learning_rate,epsilon=1e-4).
+                 tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate,epsilon=1e-4).
                  compute_gradients(loss * loss_scale,colocate_gradients_with_ops=True)]
         return grads
 
@@ -504,7 +504,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
     downsampled_reshaped = tf.stack([L_channel_downsampled, R_channel_downsampled],axis=3)
     new_sig_nonlin = tf.pow(downsampled_reshaped,0.3)
     new_sig_nonlin.set_shape([None, 39, 8000, 2])
-    # print(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,scope='fp32_storage'))
+    # print(tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.GLOBAL_VARIABLES,scope='fp32_storage'))
     # print(subbands_batch)
     
     ####TMEPORARY OVERRIDE####
@@ -517,7 +517,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
         out=net.build(config_array,new_sig_nonlin,training_state,dropout_training_state,filter_dtype,padding,n_classes_localization,n_classes_recognition,branched,regularizer)
     
     if regularizer is not None:
-        reg_term=tf.contrib.layers.apply_regularization(regularizer,(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)))
+        reg_term=tf.contrib.layers.apply_regularization(regularizer,(tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.REGULARIZATION_LOSSES)))
 
     combined_dict = collections.OrderedDict()
     combined_dict_fg = collections.OrderedDict()
@@ -579,7 +579,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
     #cost = tf.Print(cost, [tf.argmax(out, 1)],message="\nOut:",summarize=32)
     
 #     init_op = tf.group(tf.compat.v1.global_variables_initializer(),
-#                        tf.local_variables_initializer())
+#                        tf.compat.v1.local_variables_initializer())
 #     config = tf.compat.v1.ConfigProto(allow_soft_placement=True,
 #                             inter_op_parallelism_threads=0, intra_op_parallelism_threads=0)
 #     sess = tf.compat.v1.Session(config=config)
@@ -588,9 +588,9 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
 #     threads = tf.train.start_queue_runners(sess=sess,coord=coord)
 #     print(sess.run(cost))
     
-    update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+    update_ops = tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(update_ops):
-        update_grads = tf.train.AdamOptimizer(learning_rate=learning_rate,epsilon=1e-4).minimize(cost)
+        update_grads = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate,epsilon=1e-4).minimize(cost)
 
 
 
@@ -617,11 +617,11 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
     # Initializing the variables
     #
     # Check_op seems to take up a lot of space on the GPU
-    check_op = tf.add_check_numerics_ops()
+    check_op = tf.compat.v1.add_check_numerics_ops()
     
     
     init_op = tf.group(tf.compat.v1.global_variables_initializer(),
-                       tf.local_variables_initializer())
+                       tf.compat.v1.local_variables_initializer())
 
     # Launch the graph
     #with tf.compat.v1.Session() as sess:
@@ -775,7 +775,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
                 eval_vars = list(combined_dict[0].values())
                 eval_keys = list(combined_dict[0].keys())
                 while True:
-                    pred, cd, e_vars = sess.run([correct_pred, cond_dist, eval_vars])
+                    pred, cd, e_vars, top_k_res, gt_az_idx, gt_el_idx = sess.run([correct_pred, cond_dist, eval_vars, top_k, combined_dict[0]['train/azim'], combined_dict[0]['train/elev']])
                     array_len = len(e_vars)
                     if isinstance(e_vars,list):
                        e_vars = list(zip(*e_vars))
@@ -787,6 +787,17 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
                         batch_conditional += [(cond,var) for cond, var in zip(cd,e_vars.T)]
                         split.insert(0,pred)
                         batch_acc += np.dstack(split).tolist()[0]
+                    
+                    if batch_callback:
+                        batch_callback({
+                            'step': step,
+                            'batch_size': batch_size,
+                            'gt_az_idx': gt_az_idx,
+                            'gt_el_idx': gt_el_idx,
+                            'top_k_indices': top_k_res.indices,
+                            'top_k_values': top_k_res.values
+                        })
+
 
                     if branched:
                         pred2, cd2, e_vars2 = sess.run(correct_pred2,cond_dist2,eval_vars)
@@ -902,5 +913,5 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
      #    json.dump([np_weights1.tolist(),np_weights2.tolist()],f)
      #
     sess.close()
-    tf.reset_default_graph()
+    tf.compat.v1.reset_default_graph()
 

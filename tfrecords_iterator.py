@@ -48,19 +48,19 @@ def build_tfrecords_iterator(num_epochs, train_path_pattern, is_bkgd, feature_pa
     for path in feature_parsing_dict.keys():
         if is_bkgd is True and (path =='train/azim' or path == 'train/elev'):
             path_dtype = feature_parsing_dict[path].dtype
-            feature_dict[path] = tf.VarLenFeature(path_dtype)
+            feature_dict[path] = tf.io.VarLenFeature(path_dtype)
         else:
             path_dtype = feature_parsing_dict[path].dtype
             path_shape = feature_parsing_dict[path].shape
-            feature_dict[path] = tf.FixedLenFeature(path_shape, path_dtype)
+            feature_dict[path] = tf.io.FixedLenFeature(path_shape, path_dtype)
 
     ### Define the tfrecords parsing function
     def parse_tfrecord_example(record):
         ''' Parsing function returns dictionary of tensors with tfrecords paths as keys '''
         # Parse the record read by the reader
-        parsed_features = tf.parse_single_example(record, features=feature_dict)
+        parsed_features = tf.io.parse_single_example(record, features=feature_dict)
         # Convert the image data from string back to the numbers
-#        features = tf.parse_single_example(record,features=feature_parsing_dict)
+#        features = tf.io.parse_single_example(record,features=feature_parsing_dict)
 #        image = tf.decode_raw(features['train/image'], tf.float32)
 #        image = tf.reshape(image, STIM_SIZE)
 #        height = tf.cast(features['train/image_height'],tf.int32)

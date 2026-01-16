@@ -11,7 +11,7 @@ sys.setrecursionlimit(10000)
 util = sys.modules[__name__]
 
 # getting rid of "WARNING:tensorflow:VARIABLES collection name is deprecated"
-setattr(tf.GraphKeys, "VARIABLES", "variables")
+setattr(tf.compat.v1.GraphKeys, "VARIABLES", "variables")
 
 # save original gradients since tf.gradient could be monkey-patched to point
 # to our version
@@ -68,7 +68,7 @@ def gradients(ys, xs, grad_ys=None, checkpoints='collection', **kwargs):
     debug_print("fwd_ops: %s", fwd_ops)
     
     # exclude ops with no inputs
-    fwd_ops = [op for op in fwd_ops if op._inputs]
+    fwd_ops = [op for op in fwd_ops if op.inputs]
 
     # don't recompute xs, remove variables
     xs_ops = _to_ops(xs)
@@ -85,7 +85,7 @@ def gradients(ys, xs, grad_ys=None, checkpoints='collection', **kwargs):
     # given as input
     if type(checkpoints) is not list:
         if checkpoints == 'collection':
-            checkpoints = tf.get_collection('checkpoints')
+            checkpoints = tf.compat.v1.get_collection('checkpoints')
             debug_print("initial_checkpoints: %s", checkpoints)
             
         elif checkpoints == 'speed':
@@ -213,7 +213,7 @@ def gradients(ys, xs, grad_ys=None, checkpoints='collection', **kwargs):
                 checkpoints_disconnected.values(), checkpoints_disconnected.keys(), copied_ops)
 
     # get gradients with respect to current boundary + original x's
-    copied_ys = [info._transformed_ops[y.op]._outputs[0] for y in ys]
+    copied_ys = [info._transformed_ops[y.op].outputs[0] for y in ys]
     boundary = list(checkpoints_disconnected.values())
     dv = tf_gradients(ys=copied_ys, xs=boundary+xs, grad_ys=grad_ys, **kwargs)
     debug_print("Got gradients %s", dv)
@@ -259,7 +259,7 @@ def gradients(ys, xs, grad_ys=None, checkpoints='collection', **kwargs):
                     checkpoints_disconnected_other, checkpoints_other, copied_ops)
 
         # gradient flowing through the checkpointed node
-        boundary = [info._transformed_ops[r.op]._outputs[0] for r in ts]
+        boundary = [info._transformed_ops[r.op].outputs[0] for r in ts]
         substitute_backprops = [d_checkpoints[r] for r in ts]
         dv = tf_gradients(boundary,
                           checkpoints_disconnected_other+xs,

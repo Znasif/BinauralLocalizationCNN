@@ -102,16 +102,95 @@ def main():
     print(f"Batch Size: {args.batch_size}")
     print()
     
+    # Metrics accumulation
+    class MetricsTracker:
+        def __init__(self):
+            self.total_samples = 0
+            self.correct_top1 = 0
+            self.correct_top5 = 0
+            self.azimuth_errors = []
+            self.elevation_errors = []
+        
+        def update(self, data):
+            gt_az_idx = data['gt_az_idx']
+            gt_el_idx = data['gt_el_idx']
+            top_k_indices = data['top_k_indices']
+            
+            batch_size = len(gt_az_idx)
+            self.total_samples += batch_size
+            
+            for i in range(batch_size):
+                # Reconstruct ground truth class
+                # Class = elev_idx * 36 + azim_idx
+                true_class = gt_el_idx[i] * 36 + gt_az_idx[i]
+                
+                # Check Top-1
+                pred_class = top_k_indices[i][0]
+                if pred_class == true_class:
+                    self.correct_top1 += 1
+                
+                # Check Top-5
+                if true_class in top_k_indices[i]:
+                    self.correct_top5 += 1
+                
+                # Calculate Angular Errors
+                # Convert indices to degrees (Azimuth: 5deg steps, Eleavation: 10deg steps)
+                true_az = gt_az_idx[i] * 5
+                true_el = gt_el_idx[i] * 10 
+                # Note: Code uses 10 degree steps for elevation in display, but `label_div_const` logic in tfrecords_iterator 
+                # uses localization_bin_resolution. Run_inference sets `label_div_const` logic via arguments.
+                # Assuming 10 degree elevation steps based on `test_inference_minimal.py` logic.
+                
+                pred_az_idx = pred_class % 36
+                pred_el_idx = pred_class // 36
+                pred_az = pred_az_idx * 5
+                pred_el = pred_el_idx * 10  # Assuming 10 degrees? tf_record uses `tf.scalar_mul(tf.constant(36...), elev)`
+                # 36 azimuth bins -> 180 degrees range / 5 degrees step = 36 bins.
+                # Elevation? If 504 classes / 36 = 14 elevation bins.
+                # 14 bins * 10 degrees = 140 degrees (0-130). Checks out.
+                
+                self.azimuth_errors.append(abs(pred_az - true_az))
+                self.elevation_errors.append(abs(pred_el - true_el))
+                
+            # print(f"Processed {self.total_samples} samples...", end='\r')
+
+        def print_summary(self):
+            if self.total_samples == 0:
+                print("No samples processed.")
+                return
+                
+            accuracy = self.correct_top1 / self.total_samples * 100
+            top5_accuracy = self.correct_top5 / self.total_samples * 100
+            mean_az_error = np.mean(self.azimuth_errors)
+            mean_el_error = np.mean(self.elevation_errors)
+            
+            print("\n" + "="*40)
+            print(f"Inference Summary ({self.total_samples} samples)")
+            print("="*40)
+            print(f"Accuracy (Top-1):       {accuracy:.2f}%")
+            print(f"Accuracy (Top-5):       {top5_accuracy:.2f}%")
+            print(f"Mean Azimuth Error:     {mean_az_error:.2f} degrees")
+            print(f"Mean Elevation Error:   {mean_el_error:.2f} degrees")
+            print("="*40)
+
+    tracker = MetricsTracker()
+
     # Run inference
-    tf_record_CNN_spherical(
-        tone_version, itd_tones, ild_tones, manually_added, freq_label,
-        sam_tones, transposed_tones, precedence_effect, narrowband_noise,
-        all_positions_bkgd, background_textures, testing, branched,
-        zero_padded, stacked_channel, model_version, num_epochs,
-        data_pattern, bkgd_pattern, arch_ID, config_array, files,
-        num_files, model_dir, regularizer, SNR_max, SNR_min,
-        batch_size=args.batch_size
-    )
+    try:
+        tf_record_CNN_spherical(
+            tone_version, itd_tones, ild_tones, manually_added, freq_label,
+            sam_tones, transposed_tones, precedence_effect, narrowband_noise,
+            all_positions_bkgd, background_textures, testing, branched,
+            zero_padded, stacked_channel, model_version, num_epochs,
+            data_pattern, bkgd_pattern, arch_ID, config_array, files,
+            num_files, model_dir, regularizer, SNR_max, SNR_min,
+            batch_size=args.batch_size,
+            batch_callback=tracker.update
+        )
+    except Exception as e:
+        print(f"An error occurred during inference: {e}")
+    finally:
+        tracker.print_summary()
 
 
 if __name__ == '__main__':
