@@ -48,7 +48,7 @@ def write_batch_data(newpath,train_path_pattern,stim,batch_acc,
         json.dump(eval_keys,f)
 
 
-def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq_label,sam_tones,transposed_tones,precedence_effect,narrowband_noise,all_positions_bkgd,background_textures,testing,branched,zero_padded,stacked_channel,model_version,num_epochs,train_path_pattern,bkgd_train_path_pattern,arch_ID,config_array,files,num_files,newpath,regularizer,SNR_max=40,SNR_min=5):
+def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq_label,sam_tones,transposed_tones,precedence_effect,narrowband_noise,all_positions_bkgd,background_textures,testing,branched,zero_padded,stacked_channel,model_version,num_epochs,train_path_pattern,bkgd_train_path_pattern,arch_ID,config_array,files,num_files,newpath,regularizer,SNR_max=40,SNR_min=5,batch_size=16):
 
     bkgd_training_paths = glob.glob(bkgd_train_path_pattern)
     training_paths = glob.glob(train_path_pattern)
@@ -70,7 +70,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
     localization_bin_resolution=5
 
     #Optimization Params
-    batch_size=16
+    #batch_size=16
     learning_rate = 1e-3
     loss_exponent = 12
     loss_scale = 2**loss_exponent
@@ -295,8 +295,15 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
             new_dataset = new_dataset.map(lambda x,y: combine_signal_and_noise_stacked_channel(x,y,0,48000,8000,post_rectify=True))
         else:
             new_dataset = new_dataset.map(lambda x,y: combine_signal_and_noise(x,y,0,48000,8000,post_rectify=True))
-        batch_sizes = tf.constant(16,dtype=tf.int64)
-        new_dataset = new_dataset.shuffle(buffer_size=200).batch(batch_size=batch_sizes,drop_remainder=True)
+        
+        batch_sizes = tf.constant(batch_size, dtype=tf.int64)
+        
+        if testing:
+            # For testing, no shuffle and no drop_remainder
+            new_dataset = new_dataset.batch(batch_size=batch_sizes, drop_remainder=False)
+        else:
+            # For training, shuffle and drop remainder
+            new_dataset = new_dataset.shuffle(buffer_size=200).batch(batch_size=batch_sizes, drop_remainder=True)
         #combined_iter = new_dataset.make_one_shot_iterator()
         combined_iter = new_dataset.make_initializable_iterator()
         combined_iter_dict = collections.OrderedDict()
@@ -496,6 +503,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
                                                               axis=0)
     downsampled_reshaped = tf.stack([L_channel_downsampled, R_channel_downsampled],axis=3)
     new_sig_nonlin = tf.pow(downsampled_reshaped,0.3)
+    new_sig_nonlin.set_shape([None, 39, 8000, 2])
     # print(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,scope='fp32_storage'))
     # print(subbands_batch)
     
@@ -525,8 +533,8 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
 
 
     ##Fully connected Layer 2
-    #wd2 = tf.get_variable('wd2',[512,512],filter_dtype)
-    #dense_bias2 = tf.get_variable('wb6',[512],filter_dtype)
+    #wd2 = tf.compat.v1.get_variable('wd2',[512,512],filter_dtype)
+    #dense_bias2 = tf.compat.v1.get_variable('wb6',[512],filter_dtype)
     #fc2 = tf.add(tf.matmul(fc1_do, wd2), dense_bias2)
     #fc2 = tf.nn.relu(fc2)
     #fc2_do = tf.layers.dropout(fc2,training=dropout_training_state)
@@ -570,11 +578,11 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
     
     #cost = tf.Print(cost, [tf.argmax(out, 1)],message="\nOut:",summarize=32)
     
-#     init_op = tf.group(tf.global_variables_initializer(),
+#     init_op = tf.group(tf.compat.v1.global_variables_initializer(),
 #                        tf.local_variables_initializer())
-#     config = tf.ConfigProto(allow_soft_placement=True,
+#     config = tf.compat.v1.ConfigProto(allow_soft_placement=True,
 #                             inter_op_parallelism_threads=0, intra_op_parallelism_threads=0)
-#     sess = tf.Session(config=config)
+#     sess = tf.compat.v1.Session(config=config)
 #     sess.run(init_op)
 #     coord = tf.train.Coordinator()
 #     threads = tf.train.start_queue_runners(sess=sess,coord=coord)
@@ -612,15 +620,15 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
     check_op = tf.add_check_numerics_ops()
     
     
-    init_op = tf.group(tf.global_variables_initializer(),
+    init_op = tf.group(tf.compat.v1.global_variables_initializer(),
                        tf.local_variables_initializer())
 
     # Launch the graph
-    #with tf.Session() as sess:
+    #with tf.compat.v1.Session() as sess:
     #run_metadata = tf.RunMetadata()
-    config = tf.ConfigProto(allow_soft_placement=True,
+    config = tf.compat.v1.ConfigProto(allow_soft_placement=True,
                             inter_op_parallelism_threads=0, intra_op_parallelism_threads=0)
-    sess = tf.Session(config=config)
+    sess = tf.compat.v1.Session(config=config)
     sess.run(init_op)
     if branched:
         print("Class Labels:" + str(sess.run(combined_dict[0]['train/class_num'])))
@@ -670,7 +678,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
 
     if not testing:
         sess.run(combined_iter.initializer)
-        saver = tf.train.Saver(max_to_keep=None)
+        saver = tf.compat.v1.train.Saver(max_to_keep=None)
         learning_curve = []
         errors_count =0
         try:
@@ -759,7 +767,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
             batch_acc2 = []
             batch_conditional = []
             batch_conditional2 = []
-            saver = tf.train.Saver(max_to_keep=None)
+            saver = tf.compat.v1.train.Saver(max_to_keep=None)
             #saver.restore(sess,newpath+"/model.ckpt-"+str(model_version))
             saver.restore(sess,newpath+"/model.ckpt-"+str(stim))
             step = 0
@@ -884,7 +892,7 @@ def tf_record_CNN_spherical(tone_version,itd_tones,ild_tones,manually_added,freq
      #activation1, activation2 = sess.run([conv1,conv3])
      #with open('activations.json','w') as f:
      #    json.dump([activation1.tolist(),activation2.tolist()],f)
-     #tf.get_variable_scope().reuse_variables()
+     #tf.compat.v1.get_variable_scope().reuse_variables()
      #first_layer = [var for var in tf.global_variables() if var.op.name=="wc1"][0]
      #second_layer = [var for var in tf.global_variables() if var.op.name=="wc2"][0]
      #weights_image = put_kernels_on_grid(first_layer)

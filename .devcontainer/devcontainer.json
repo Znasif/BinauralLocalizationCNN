@@ -1,0 +1,26 @@
+{
+    "name": "BinauralLocalizationCNN - TensorFlow 2.15 GPU",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "workspaceFolder": "/app",
+    "runArgs": [
+        "--gpus",
+        "all"
+    ],
+    "mounts": [
+        "source=${localWorkspaceFolder},target=/app,type=bind,consistency=cached"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.debugpy"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/bin/python3"
+            }
+        }
+    },
+    "postCreateCommand": "pip install --upgrade pip && pip install \"numpy<1.20\" \"matplotlib<3.6\" scipy seaborn"
+}

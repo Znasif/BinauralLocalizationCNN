@@ -11,6 +11,11 @@
     * The precomputed training data that were used to train the original model can be downloaded here: https://drive.google.com/drive/folders/1pUyMmkurxEWFeofbLKy5-QVWrcMbM8Wz?usp=sharing
 
 
+Docker: docker run -it --gpus all -v /mnt/d/Projects/BinauralLocalizationCNN:/app   nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash
+After navigating to app:
+pip install --upgrade pip && pip install "numpy<1.20" "matplotlib<3.6" scipy seaborn
+Then run the inference script:
+python test_inference_minimal.py --model_dir models/net1 --tfrecord data/train0.tfrecords --use_gpu
 
 Note: Before running, please change the model save folder to point to your directory with the model architecture config file and data folder to point to your data. Both of these are in the associated shell scripts. The code itself contains no absolute paths.
 
