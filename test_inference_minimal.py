@@ -228,7 +228,7 @@ def wav_to_cochleagram(audio, sr, target_sr=48000, n_channels=39, low_lim=30, hi
             downsample=None,
             nonlinearity=None,
             fft_mode='np',
-            ret_mode='envs',  # Get envelope (subband energy)
+            ret_mode='subband',  # Get subbands (filtered waveforms) not envelopes
             strict=False
         )
         
@@ -399,7 +399,7 @@ def prepare_input_for_model(cochleagram, target_samples=8000):
 
 
 def main():
-    '''pip install seaborn matplotlib scipy
+    '''pip install --upgrade pip && pip install \"numpy<1.20\" \"matplotlib<3.6\" scipy seaborn
     docker run -it --gpus all -v /mnt/d/Projects/CNN:/app nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash''' 
     import argparse
     parser = argparse.ArgumentParser(description='Minimal inference test with wav or tfrecord input')
@@ -518,7 +518,7 @@ def main():
     print("INFERENCE TEST SUCCESSFUL!")
     print("="*50)
     if 'azimuth' in metadata:
-        print(f"Ground truth: Azimuth={metadata['azimuth']*5}°, Elevation={metadata['elevation']*10}°")
+        print(f"Ground truth: Azimuth={metadata['azimuth']}°, Elevation={metadata['elevation']}°")
     print(f"\nTop 5 Predictions:")
     print("-" * 50)
 

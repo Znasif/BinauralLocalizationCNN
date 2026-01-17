@@ -135,8 +135,8 @@ def main():
                 
                 # Calculate Angular Errors
                 # Convert indices to degrees (Azimuth: 5deg steps, Eleavation: 10deg steps)
-                true_az = gt_az_idx[i] * 5
-                true_el = gt_el_idx[i] * 10 
+                true_az = gt_az_idx[i]
+                true_el = gt_el_idx[i]
                 # Note: Code uses 10 degree steps for elevation in display, but `label_div_const` logic in tfrecords_iterator 
                 # uses localization_bin_resolution. Run_inference sets `label_div_const` logic via arguments.
                 # Assuming 10 degree elevation steps based on `test_inference_minimal.py` logic.
