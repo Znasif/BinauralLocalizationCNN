@@ -17,11 +17,15 @@ To aid reproducibility and decrease setup time we provide a [Singularity Image](
 
 
 # Docker instructions for Ampere Architecture
+```bash
 docker run -it --gpus all -v /mnt/d/Projects/BinauralLocalizationCNN:/app   nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash
-After navigating to app:
+# Navigate to app
+cd ../app
+# After navigating to app:
 pip install --upgrade pip && pip install "numpy<1.20" "matplotlib<3.6" scipy seaborn
-Then run the inference script:
+# Then run the inference script. Sample index can be between 0 and 199:
 python test_inference_minimal.py --model_dir models/net1 --tfrecord data/train0.tfrecords --sample_index=199 --use_gpu
+```
 
 # Lots of questions
 1. What to do about the 48kHz and 96kHz sampling rate mismatch? Look at prepare_hrir.py for my current thinking.
