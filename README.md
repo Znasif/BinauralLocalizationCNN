@@ -16,7 +16,7 @@ Note: Before running, please change the model save folder to point to your direc
 To aid reproducibility and decrease setup time we provide a [Singularity Image](https://sylabs.io/singularity/) that contains all packages necessary to run the code without any further setup. The image is available on dropbox here: https://www.dropbox.com/s/ey74fiw4uquww0n/tfv1.13_tcmalloc.simg?dl=0
 
 
-# Docker instructions for Ampere Architecture
+# Docker instructions for Ampere (and Turing?) Architecture
 ```bash
 docker run -it --gpus all -v /mnt/d/Projects/BinauralLocalizationCNN:/app   nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash
 # Navigate to app
