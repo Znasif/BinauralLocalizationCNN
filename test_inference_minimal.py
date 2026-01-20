@@ -66,10 +66,10 @@ def plot_prediction_distribution(probabilities, ground_truth=None, output_path='
     
     # Add ground truth marker if available
     if ground_truth and 'azimuth' in ground_truth:
-        gt_azim_idx = ground_truth['azimuth']
-        gt_elev_idx = ground_truth['elevation']
+        gt_azim_idx = ground_truth['azimuth'] / 5.0
+        gt_elev_idx = ground_truth['elevation'] / 10.0
         ax1.plot(gt_azim_idx, gt_elev_idx, 'r*', markersize=20,
-                label=f'Ground Truth ({gt_azim_idx*5}°, {gt_elev_idx*10}°)')
+                label=f'Ground Truth ({ground_truth["azimuth"]}°, {ground_truth["elevation"]}°)')
         ax1.legend(loc='upper right')
     
     plt.colorbar(im, ax=ax1, label='Probability')
@@ -86,7 +86,7 @@ def plot_prediction_distribution(probabilities, ground_truth=None, output_path='
     ax2.grid(axis='y', alpha=0.3)
 
     if ground_truth and 'azimuth' in ground_truth:
-        gt_azim = ground_truth['azimuth'] * 5
+        gt_azim = ground_truth['azimuth']
         ax2.axvline(gt_azim, color='red', linestyle='--', linewidth=2, label='Ground Truth')
         ax2.legend()
     
@@ -102,7 +102,7 @@ def plot_prediction_distribution(probabilities, ground_truth=None, output_path='
     ax3.grid(axis='x', alpha=0.3)
     
     if ground_truth and 'elevation' in ground_truth:
-        gt_elev = ground_truth['elevation'] * 10
+        gt_elev = ground_truth['elevation']
         ax3.axhline(gt_elev, color='red', linestyle='--', linewidth=2, label='Ground Truth')
         ax3.legend()
     
@@ -399,8 +399,6 @@ def prepare_input_for_model(cochleagram, target_samples=8000):
 
 
 def main():
-    '''pip install --upgrade pip && pip install \"numpy<1.20\" \"matplotlib<3.6\" scipy seaborn
-    docker run -it --gpus all -v /mnt/d/Projects/CNN:/app nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash''' 
     import argparse
     parser = argparse.ArgumentParser(description='Minimal inference test with wav or tfrecord input')
     parser.add_argument('--model_dir', required=True, help='Directory containing model checkpoint')
@@ -412,10 +410,11 @@ def main():
     args = parser.parse_args()
 
     model_dir = os.path.abspath(args.model_dir)
-    
+    png_file = ""
     # Determine input source
     if args.wav_file:
         print(f"Loading wav file: {args.wav_file}")
+        png_file=args.wav_file.split("/")[-1].split(".")[0]+".png"
         audio, sr = load_wav_file(args.wav_file)
         print(f"Audio shape: {audio.shape}, Sample rate: {sr}")
         
@@ -426,6 +425,7 @@ def main():
         metadata = {'source': 'wav_file', 'path': args.wav_file}
     elif args.tfrecord:
         print(f"Loading from tfrecord: {args.tfrecord}, sample {args.sample_index}")
+        png_file=args.tfrecord.split("/")[-1].split(".")[0]+"_sample_"+str(args.sample_index)+".png"
         cochleagram, metadata = load_tfrecord_sample(args.tfrecord, args.sample_index)
         print(f"Cochleagram shape: {cochleagram.shape}")
         print(f"Metadata: {metadata}")
@@ -471,7 +471,6 @@ def main():
     input_placeholder = tf.compat.v1.placeholder(tf.float32, [batch_size, 39, 8000, 2], name='input')
     nonlin = tf.pow(input_placeholder, 0.3)
     
-    # Build network with CPU config
     net = NetBuilder()
     out = net.build(config_array, nonlin, 
                    training_state=False,
@@ -535,7 +534,7 @@ def main():
     if args.plot_output:
         plot_output_path = args.plot_output
     else:
-        plot_output_path = os.path.join(model_dir, 'inference_prediction.png')
+        plot_output_path = png_file
     
     plot_prediction_distribution(prob[0], ground_truth=metadata, output_path=plot_output_path)
     
