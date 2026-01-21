@@ -25,11 +25,12 @@ cd ../app
 pip install --upgrade pip && pip install "numpy<1.20" "matplotlib<3.6" scipy seaborn
 # Then run the inference script. Sample index can be between 0 and 199:
 python test_inference_minimal.py --model_dir models/net1 --tfrecord data/train0.tfrecords --plot_output=./plots/ --use_gpu
+python test_inference_minimal.py --model_dir models/net1 --wav_file=echo/az-100_tdist100_Idist100_fs96000.wav --plot_output=./plots/ --use_gpu
 python test_inference_minimal.py --model_dir models/net1 --wav_folder=echo/ --plot_output=./plots/ --use_gpu
 ```
 
-# Lots of questions
-1. What to do about the 48kHz and 96kHz sampling rate mismatch? Look at prepare_hrir.py for my current thinking.
-2. Are HRIR supposed to sound like clicks?
-3. For the hrir dataset Santani shared, like az0_tdist100_Idist100_fs96000.wav, azimuth is 0 but what is the elevation? Is it 0 for all? What is tdist and idist?
-4. Should I use 'NaturalSound_X_realWorldAIREchoThief' in dropbox 'Training_dataset_for_ML_model' folder for dry sounds? Or https://github.com/karolpiczak/ESC-50 or does not matter? Or did Santani share the dry sounds?
+# If using TF2 environment without docker
+
+```bash
+python test_inference_tflite.py --model_file ./models/net1/model.tflite --wav_file echo/az-100_tdist100_Idist100_fs96000.wav
+```
