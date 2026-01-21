@@ -44,7 +44,8 @@ def plot_prediction_distribution(probabilities, ground_truth=None, output_path='
         output_path: Path to save the plot
     """
     # Reshape probabilities to 2D grid: elevation (14) x azimuth (36)
-    prob_grid = probabilities.reshape(14, 36)
+    print(probabilities.shape)
+    prob_grid = probabilities.reshape(7, 72)
     
     # Create figure with multiple subplots
     fig = plt.figure(figsize=(16, 10))
@@ -57,8 +58,8 @@ def plot_prediction_distribution(probabilities, ground_truth=None, output_path='
     ax1.set_title('Probability Distribution (Heatmap)', fontsize=14, fontweight='bold')
     
     # Set ticks
-    azim_ticks = np.arange(0, 36, 6)
-    elev_ticks = np.arange(0, 14, 2)
+    azim_ticks = np.arange(0, 72, 6)
+    elev_ticks = np.arange(0, 7, 2)
     ax1.set_xticks(azim_ticks)
     ax1.set_xticklabels([f'{i*5}°' for i in azim_ticks])  # 5-degree bins for azimuth
     ax1.set_yticks(elev_ticks)
@@ -77,12 +78,14 @@ def plot_prediction_distribution(probabilities, ground_truth=None, output_path='
     # 2. Marginal distribution over azimuth
     ax2 = plt.subplot(2, 2, 2)
     azim_probs = np.sum(prob_grid, axis=0)
-    azim_angles = np.arange(0, 180, 5)  # 5-degree bins, 36 bins total (0-175°)
+    
+    azim_angles = np.arange(0, 360, 5)  # 5-degree bins, 36 bins total (0-175°)
+    
     ax2.bar(azim_angles, azim_probs, width=4, color='steelblue', alpha=0.7, edgecolor='black')
     ax2.set_xlabel('Azimuth (degrees)', fontsize=12)
     ax2.set_ylabel('Marginal Probability', fontsize=12)
     ax2.set_title('Azimuth Distribution', fontsize=14, fontweight='bold')
-    ax2.set_xlim(-5, 185)
+    ax2.set_xlim(-5, 360)
     ax2.grid(axis='y', alpha=0.3)
 
     if ground_truth and 'azimuth' in ground_truth:
@@ -93,7 +96,7 @@ def plot_prediction_distribution(probabilities, ground_truth=None, output_path='
     # 3. Marginal distribution over elevation
     ax3 = plt.subplot(2, 2, 3)
     elev_probs = np.sum(prob_grid, axis=1)
-    elev_angles = np.arange(0, 140, 10)
+    elev_angles = np.arange(0, 70, 10)
     ax3.barh(elev_angles, elev_probs, height=8, color='coral', alpha=0.7, edgecolor='black')
     ax3.set_ylabel('Elevation (degrees)', fontsize=12)
     ax3.set_xlabel('Marginal Probability', fontsize=12)
@@ -117,8 +120,8 @@ def plot_prediction_distribution(probabilities, ground_truth=None, output_path='
     # Create table data
     table_data = []
     for i, (idx, prob) in enumerate(zip(top_indices, top_probs), 1):
-        azim_idx = idx % 36
-        elev_idx = idx // 36
+        azim_idx = idx % 72
+        elev_idx = idx // 72
         azim_deg = azim_idx * 5  # 5-degree bins
         elev_deg = elev_idx * 10  # 10-degree bins
 
@@ -247,7 +250,7 @@ def wav_to_cochleagram(audio, sr, target_sr=48000, n_channels=39, low_lim=30, hi
     return cochleagram_stereo.astype(np.float32)
 
 
-def load_tfrecord_sample(tfrecord_path, sample_index=0):
+def load_tfrecord_sample(tfrecord_path, sample_index=None):
     """
     Load a sample cochleagram from a tfrecord file.
     
@@ -260,10 +263,10 @@ def load_tfrecord_sample(tfrecord_path, sample_index=0):
         metadata: Dictionary with azimuth, elevation, etc.
     """
     options = tf.io.TFRecordOptions(tf.compat.v1.python_io.TFRecordCompressionType.GZIP)
-    
+    cochleagram, metadata = [], []
     count = 0
     for serialized_example in tf.python_io.tf_record_iterator(tfrecord_path, options=options):
-        if count == sample_index:
+        if not sample_index:
             example = tf.train.Example()
             example.ParseFromString(serialized_example)
             features = example.features.feature
@@ -310,8 +313,58 @@ def load_tfrecord_sample(tfrecord_path, sample_index=0):
                 metadata['elevation'] = elev_degrees
             
             return cochleagram, metadata
+        else:
+            example = tf.train.Example()
+            example.ParseFromString(serialized_example)
+            features = example.features.feature
+            
+            # Extract the image (cochleagram) data
+            if 'train/image' in features:
+                image_bytes = features['train/image'].bytes_list.value[0]
+                # Decode as float32 or float64
+                try:
+                    image_data = np.frombuffer(image_bytes, dtype=np.float32)
+                except:
+                    image_data = np.frombuffer(image_bytes, dtype=np.float64).astype(np.float32)
+                
+                # Try to reshape - the tfrecord stores data in different formats
+                # Based on tfrecords_iterator.py, stacked_channel format is [39, 48000, 2]
+                try:
+                    # Try stacked channel format first
+                    cochleagram_ = image_data.reshape(39, 48000, 2)
+                except ValueError:
+                    # Try non-stacked format [78, 48000] then convert
+                    try:
+                        cochleagram_ = image_data.reshape(78, 48000)
+                        # Convert to stacked format
+                        cochleagram_ = np.stack([cochleagram_[:39], cochleagram_[39:]], axis=2)
+                    except ValueError:
+                        # Try other possible shapes
+                        total_elements = len(image_data)
+                        print(f"Total elements in image: {total_elements}")
+                        raise ValueError(f"Cannot reshape image data with {total_elements} elements")
+            else:
+                raise ValueError("No 'train/image' found in tfrecord")
+            
+            # Extract metadata
+            # Note: tfrecords store values in degrees (e.g., 175 for azimuth, 60 for elevation)
+            # Model uses 5-degree bins for azimuth (0-35) and 10-degree bins for elevation (0-13)
+            metadata_ = {}
+            if 'train/azim' in features:
+                azim_degrees = features['train/azim'].int64_list.value[0]
+                # Convert to index in 5-degree bins (0-35 for azimuth: 0°, 5°, 10°, ..., 175°)
+                metadata_['azimuth'] = azim_degrees
+            if 'train/elev' in features:
+                elev_degrees = features['train/elev'].int64_list.value[0]
+                # Convert to index in 10-degree bins (0-13 for elevation)
+                metadata_['elevation'] = elev_degrees
+            
+            cochleagram.append(cochleagram_)
+            metadata.append(metadata_)
         
         count += 1
+        if count==200:
+            return cochleagram, metadata
     
     raise ValueError(f"Sample index {sample_index} not found in tfrecord (only {count} samples)")
 
@@ -403,6 +456,7 @@ def main():
     parser = argparse.ArgumentParser(description='Minimal inference test with wav or tfrecord input')
     parser.add_argument('--model_dir', required=True, help='Directory containing model checkpoint')
     parser.add_argument('--wav_file', default='', help='Path to stereo .wav file for inference')
+    parser.add_argument('--wav_folder', default='', help='Path to folder containing .wav files for inference')
     parser.add_argument('--tfrecord', default='', help='Path to .tfrecords file')
     parser.add_argument('--sample_index', type=int, default=0, help='Sample index in tfrecord (default: 0)')
     parser.add_argument('--plot_output', default='', help='Path to save visualization plot (default: model_dir/inference_prediction.png)')
@@ -420,25 +474,47 @@ def main():
         
         # Convert to cochleagram
         print("Converting wav to cochleagram using pycochleagram...")
-        cochleagram = wav_to_cochleagram(audio, sr)
-        print(f"Cochleagram shape: {cochleagram.shape}")
-        metadata = {'source': 'wav_file', 'path': args.wav_file}
+        cochleagram = [wav_to_cochleagram(audio, sr)]
+        print(f"Cochleagram shape: {cochleagram[0].shape}")
+        metadata = [{'azimuth':-1000, 'elevation':0}]
     elif args.tfrecord:
-        print(f"Loading from tfrecord: {args.tfrecord}, sample {args.sample_index}")
-        png_file=args.tfrecord.split("/")[-1].split(".")[0]+"_sample_"+str(args.sample_index)+".png"
-        cochleagram, metadata = load_tfrecord_sample(args.tfrecord, args.sample_index)
-        print(f"Cochleagram shape: {cochleagram.shape}")
-        print(f"Metadata: {metadata}")
-        
+        if args.sample_index:
+            print(f"Loading from tfrecord: {args.tfrecord}, sample {args.sample_index}")
+            #png_file=args.tfrecord.split("/")[-1].split(".")[0]+"_sample_"+str(args.sample_index)+".png"
+            cochleagram, metadata = load_tfrecord_sample(args.tfrecord, args.sample_index)
+            cochleagram = [cochleagram]
+            metadata = [metadata]
+        else:
+            cochleagram = []
+            metadata = []
+            for i in range(200):
+                #png_file=args.tfrecord.split("/")[-1].split(".")[0]+"_sample_"+str(args.sample_index)+".png"
+                print(f"Loading from tfrecord: {args.tfrecord}, sample {i}")
+                cochleagram_, metadata_ = load_tfrecord_sample(args.tfrecord, i)
+                cochleagram.append(cochleagram_)
+                metadata.append(metadata_)
+        print(f"Cochleagram shape: {cochleagram[0].shape}")
+        #print(f"Metadata: {metadata}")
+    elif args.wav_folder:
+        print(f"Loading wav files from folder: {args.wav_folder}")
+        cochleagram = []
+        metadata = []
+        for filename in os.listdir(args.wav_folder):
+            if filename.endswith(".wav"):
+                file_path = os.path.join(args.wav_folder, filename)
+                print(f"Loading wav file: {file_path}")
+                audio, sr = load_wav_file(file_path)
+                cochleagram_ = wav_to_cochleagram(audio, sr)
+                cochleagram.append(cochleagram_)
+                az = filename.split("az")[1].split("_")[0]
+                az = int(az)
+                if az<0: az+=360
+                metadata.append({'azimuth':az, 'elevation':0})
     else:
         # Use dummy input for testing
         print("No input specified, using random dummy data for testing...")
-        cochleagram = np.abs(np.random.randn(39, 48000, 2).astype(np.float32))
-        metadata = {'source': 'dummy'}
-    
-    # Prepare input for model
-    model_input = prepare_input_for_model(cochleagram)
-    print(f"Model input shape: {model_input.shape}")
+        cochleagram = [np.abs(np.random.randn(39, 48000, 2).astype(np.float32))]
+        metadata = [{'source': 'dummy'}]
     
     # Load config and modify GPU references to CPU
     config_array = np.load(os.path.join(model_dir, 'config_array.npy'), allow_pickle=True)
@@ -507,37 +583,40 @@ def main():
     print("Checkpoint loaded!")
     
     print("Running inference...")
-    pred, prob = sess.run([predictions, probabilities], feed_dict={input_placeholder: model_input})
-    
-    # Get top 5 predictions
-    top5_indices = np.argsort(prob[0])[-5:][::-1]
-    top5_probs = prob[0][top5_indices]
-    
-    print("\n" + "="*50)
-    print("INFERENCE TEST SUCCESSFUL!")
-    print("="*50)
-    if 'azimuth' in metadata:
-        print(f"Ground truth: Azimuth={metadata['azimuth']}°, Elevation={metadata['elevation']}°")
-    print(f"\nTop 5 Predictions:")
-    print("-" * 50)
+    for cochleagram, metadata in zip(cochleagram, metadata):
+        model_input = prepare_input_for_model(cochleagram)
+        pred, prob = sess.run([predictions, probabilities], feed_dict={input_placeholder: model_input})
+        
+        print(pred)
+        # Get top 5 predictions
+        top5_indices = np.argsort(prob[0])[-5:][::-1]
+        top5_probs = prob[0][top5_indices]
+        
+        print("\n" + "="*50)
+        print("INFERENCE TEST SUCCESSFUL!")
+        print("="*50)
+        if 'azimuth' in metadata:
+            print(f"Ground truth: Azimuth={metadata['azimuth']}°, Elevation={metadata['elevation']}°")
+        print(f"\nTop 5 Predictions:")
+        print("-" * 50)
 
-    for i, (pred_class, confidence) in enumerate(zip(top5_indices, top5_probs), 1):
-        azim_idx = pred_class % 36
-        elev_idx = pred_class // 36
-        azim_deg = azim_idx*5  # 5-degree bins for azimuth
-        elev_deg = elev_idx*10  # 10-degree bins for elevation
-        print(f"{i}. Class {pred_class}: Azimuth={azim_deg}°, Elevation={elev_deg}° (confidence: {confidence:.4f})")
-    
-    print("="*50)
-    
-    # Generate visualization
-    if args.plot_output:
-        plot_output_path = args.plot_output
-    else:
-        plot_output_path = png_file
-    
-    plot_prediction_distribution(prob[0], ground_truth=metadata, output_path=plot_output_path)
-    
+        for i, (pred_class, confidence) in enumerate(zip(top5_indices, top5_probs), 1):
+            azim_idx = pred_class % 72
+            elev_idx = pred_class // 72
+            azim_deg = azim_idx*5  # 5-degree bins for azimuth
+            elev_deg = elev_idx*10  # 10-degree bins for elevation
+            print(f"{i}. Class {pred_class}: Azimuth={azim_deg}°, Elevation={elev_deg}° (confidence: {confidence:.4f})")
+        
+        print("="*50)
+        
+        # Generate visualization
+        if args.plot_output:
+            plot_output_path = args.plot_output+str(metadata['azimuth'])+".png"
+        else:
+            plot_output_path = png_file
+        
+        plot_prediction_distribution(prob[0], ground_truth=metadata, output_path=plot_output_path)
+        
     sess.close()
 
 if __name__ == '__main__':
