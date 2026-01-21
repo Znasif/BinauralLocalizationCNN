@@ -263,10 +263,9 @@ def load_tfrecord_sample(tfrecord_path, sample_index=None):
         metadata: Dictionary with azimuth, elevation, etc.
     """
     options = tf.io.TFRecordOptions(tf.compat.v1.python_io.TFRecordCompressionType.GZIP)
-    cochleagram, metadata = [], []
     count = 0
     for serialized_example in tf.python_io.tf_record_iterator(tfrecord_path, options=options):
-        if not sample_index:
+        if count==sample_index:
             example = tf.train.Example()
             example.ParseFromString(serialized_example)
             features = example.features.feature
@@ -313,58 +312,8 @@ def load_tfrecord_sample(tfrecord_path, sample_index=None):
                 metadata['elevation'] = elev_degrees
             
             return cochleagram, metadata
-        else:
-            example = tf.train.Example()
-            example.ParseFromString(serialized_example)
-            features = example.features.feature
-            
-            # Extract the image (cochleagram) data
-            if 'train/image' in features:
-                image_bytes = features['train/image'].bytes_list.value[0]
-                # Decode as float32 or float64
-                try:
-                    image_data = np.frombuffer(image_bytes, dtype=np.float32)
-                except:
-                    image_data = np.frombuffer(image_bytes, dtype=np.float64).astype(np.float32)
-                
-                # Try to reshape - the tfrecord stores data in different formats
-                # Based on tfrecords_iterator.py, stacked_channel format is [39, 48000, 2]
-                try:
-                    # Try stacked channel format first
-                    cochleagram_ = image_data.reshape(39, 48000, 2)
-                except ValueError:
-                    # Try non-stacked format [78, 48000] then convert
-                    try:
-                        cochleagram_ = image_data.reshape(78, 48000)
-                        # Convert to stacked format
-                        cochleagram_ = np.stack([cochleagram_[:39], cochleagram_[39:]], axis=2)
-                    except ValueError:
-                        # Try other possible shapes
-                        total_elements = len(image_data)
-                        print(f"Total elements in image: {total_elements}")
-                        raise ValueError(f"Cannot reshape image data with {total_elements} elements")
-            else:
-                raise ValueError("No 'train/image' found in tfrecord")
-            
-            # Extract metadata
-            # Note: tfrecords store values in degrees (e.g., 175 for azimuth, 60 for elevation)
-            # Model uses 5-degree bins for azimuth (0-35) and 10-degree bins for elevation (0-13)
-            metadata_ = {}
-            if 'train/azim' in features:
-                azim_degrees = features['train/azim'].int64_list.value[0]
-                # Convert to index in 5-degree bins (0-35 for azimuth: 0°, 5°, 10°, ..., 175°)
-                metadata_['azimuth'] = azim_degrees
-            if 'train/elev' in features:
-                elev_degrees = features['train/elev'].int64_list.value[0]
-                # Convert to index in 10-degree bins (0-13 for elevation)
-                metadata_['elevation'] = elev_degrees
-            
-            cochleagram.append(cochleagram_)
-            metadata.append(metadata_)
         
         count += 1
-        if count==200:
-            return cochleagram, metadata
     
     raise ValueError(f"Sample index {sample_index} not found in tfrecord (only {count} samples)")
 
@@ -451,6 +400,68 @@ def prepare_input_for_model(cochleagram, target_samples=8000):
     return model_input.astype(np.float32)
 
 
+def generate_inputs(args, model_dir):
+    """Generator that yields (cochleagram, metadata, png_file) for each input sample.
+
+    Preserves original behavior: single wav file, tfrecord (single/indexed/bulk), wav folder,
+    or dummy data when nothing provided.
+    """
+    # Single wav file
+    if args.wav_file:
+        print(f"Loading wav file: {args.wav_file}")
+        png_file = args.wav_file.split("/")[-1].split(".")[0] + ".png"
+        audio, sr = load_wav_file(args.wav_file)
+        print(f"Audio shape: {audio.shape}, Sample rate: {sr}")
+        print("Converting wav to cochleagram using pycochleagram...")
+        coch = wav_to_cochleagram(audio, sr)
+        print(f"Cochleagram shape: {coch.shape}")
+        metadata = {'azimuth': -1000, 'elevation': 0}
+        yield coch, metadata, png_file
+        return
+
+    # TFRecord input
+    if args.tfrecord:
+        # If a specific sample index was provided
+        if args.sample_index:
+            print(f"Loading from tfrecord: {args.tfrecord}, sample {args.sample_index}")
+            coch, metadata = load_tfrecord_sample(args.tfrecord, args.sample_index)
+            png_file = ""
+            yield coch, metadata, png_file
+            return
+        # Otherwise iterate through up to 200 samples
+        for i in range(200):
+            print(f"Loading from tfrecord: {args.tfrecord}, sample {i}")
+            coch, metadata = load_tfrecord_sample(args.tfrecord, i)
+            png_file = ""
+            yield coch, metadata, png_file
+        return
+
+    # WAV folder
+    if args.wav_folder:
+        print(f"Loading wav files from folder: {args.wav_folder}")
+        for filename in os.listdir(args.wav_folder):
+            if filename.endswith(".wav"):
+                file_path = os.path.join(args.wav_folder, filename)
+                print(f"Loading wav file: {file_path}")
+                audio, sr = load_wav_file(file_path)
+                coch = wav_to_cochleagram(audio, sr)
+                az = filename.split("az")[1].split("_")[0]
+                az = int(az)
+                if az < 0:
+                    az += 360
+                metadata = {'azimuth': az, 'elevation': 0}
+                png_file = os.path.splitext(filename)[0] + ".png"
+                yield coch, metadata, png_file
+        return
+
+    # Default: dummy input
+    print("No input specified, using random dummy data for testing...")
+    coch = np.abs(np.random.randn(39, 48000, 2).astype(np.float32))
+    metadata = {'source': 'dummy'}
+    png_file = ""
+    yield coch, metadata, png_file
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Minimal inference test with wav or tfrecord input')
@@ -464,57 +475,8 @@ def main():
     args = parser.parse_args()
 
     model_dir = os.path.abspath(args.model_dir)
-    png_file = ""
-    # Determine input source
-    if args.wav_file:
-        print(f"Loading wav file: {args.wav_file}")
-        png_file=args.wav_file.split("/")[-1].split(".")[0]+".png"
-        audio, sr = load_wav_file(args.wav_file)
-        print(f"Audio shape: {audio.shape}, Sample rate: {sr}")
-        
-        # Convert to cochleagram
-        print("Converting wav to cochleagram using pycochleagram...")
-        cochleagram = [wav_to_cochleagram(audio, sr)]
-        print(f"Cochleagram shape: {cochleagram[0].shape}")
-        metadata = [{'azimuth':-1000, 'elevation':0}]
-    elif args.tfrecord:
-        if args.sample_index:
-            print(f"Loading from tfrecord: {args.tfrecord}, sample {args.sample_index}")
-            #png_file=args.tfrecord.split("/")[-1].split(".")[0]+"_sample_"+str(args.sample_index)+".png"
-            cochleagram, metadata = load_tfrecord_sample(args.tfrecord, args.sample_index)
-            cochleagram = [cochleagram]
-            metadata = [metadata]
-        else:
-            cochleagram = []
-            metadata = []
-            for i in range(200):
-                #png_file=args.tfrecord.split("/")[-1].split(".")[0]+"_sample_"+str(args.sample_index)+".png"
-                print(f"Loading from tfrecord: {args.tfrecord}, sample {i}")
-                cochleagram_, metadata_ = load_tfrecord_sample(args.tfrecord, i)
-                cochleagram.append(cochleagram_)
-                metadata.append(metadata_)
-        print(f"Cochleagram shape: {cochleagram[0].shape}")
-        #print(f"Metadata: {metadata}")
-    elif args.wav_folder:
-        print(f"Loading wav files from folder: {args.wav_folder}")
-        cochleagram = []
-        metadata = []
-        for filename in os.listdir(args.wav_folder):
-            if filename.endswith(".wav"):
-                file_path = os.path.join(args.wav_folder, filename)
-                print(f"Loading wav file: {file_path}")
-                audio, sr = load_wav_file(file_path)
-                cochleagram_ = wav_to_cochleagram(audio, sr)
-                cochleagram.append(cochleagram_)
-                az = filename.split("az")[1].split("_")[0]
-                az = int(az)
-                if az<0: az+=360
-                metadata.append({'azimuth':az, 'elevation':0})
-    else:
-        # Use dummy input for testing
-        print("No input specified, using random dummy data for testing...")
-        cochleagram = [np.abs(np.random.randn(39, 48000, 2).astype(np.float32))]
-        metadata = [{'source': 'dummy'}]
+    # Use generator to produce (cochleagram, metadata, png_file)
+    input_gen = generate_inputs(args, model_dir)
     
     # Load config and modify GPU references to CPU
     config_array = np.load(os.path.join(model_dir, 'config_array.npy'), allow_pickle=True)
@@ -581,9 +543,14 @@ def main():
     saver = tf.compat.v1.train.Saver()
     saver.restore(sess, os.path.join(model_dir, 'model.ckpt-100000'))
     print("Checkpoint loaded!")
+
+    if args.plot_output:
+        import shutil
+        shutil.rmtree(args.plot_output)
+        os.makedirs(args.plot_output)
     
     print("Running inference...")
-    for cochleagram, metadata in zip(cochleagram, metadata):
+    for cochleagram, metadata, png_file in input_gen:
         model_input = prepare_input_for_model(cochleagram)
         pred, prob = sess.run([predictions, probabilities], feed_dict={input_placeholder: model_input})
         
