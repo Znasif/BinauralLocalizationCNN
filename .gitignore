@@ -2,3 +2,9 @@
 /data
 __pycache__
 *.pyc
+/echo
+/plots
+BinauralDataGen.txt
+*.png
+*.pdf
+*.txt
