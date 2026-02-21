@@ -1,193 +1,394 @@
 import os
 import glob
+import random
 import numpy as np
 import tensorflow as tf
-from pycochleagram import erbfilter as erb, cochleagram as cgram
-import scipy.signal as signallib
+tf.compat.v1.disable_eager_execution()
 
 # Limit GPU memory growth
 config = tf.compat.v1.ConfigProto(allow_soft_placement=True)
 config.gpu_options.allow_growth = True
 
-def load_wav_file(wav_path):
-    from scipy.io import wavfile
-    sr, audio = wavfile.read(wav_path)
-    if audio.ndim == 1: audio = np.stack([audio, audio], axis=1)
-    if audio.dtype == np.int16: audio = audio.astype(np.float32) / 32768.0
-    return audio, sr
 
-def make_downsample_filter(sr=48000, env_sr=8000, window_size=4097, beta=10.06):
-    downsample_ratio = sr // env_sr
-    downsample_filter_times = np.arange(-window_size/2, int(window_size/2))
-    downsample_filter_response_orig = np.sinc(downsample_filter_times / downsample_ratio) / downsample_ratio
-    downsample_filter_window = signallib.kaiser(window_size, beta)
-    downsample_filter_response = downsample_filter_window * downsample_filter_response_orig
-    return downsample_filter_response.astype(np.float32), downsample_ratio
+# ─────────────────────────────────────────────────────────
+#  Dataset Pipeline
+# ─────────────────────────────────────────────────────────
 
-def wav_to_model_input(audio, sr=48000, target_sr=48000, n_channels=39, low_lim=30, hi_lim=20000, final_samples=8000):
-    # Generates 48kHz cochleagram
-    n = int(np.floor(erb.freq2erb(hi_lim) - erb.freq2erb(low_lim)) - 1)
-    cochleagrams = []
-    for channel in range(2):
-        coch = cgram.cochleagram(audio[:, channel], sr, n, low_lim, hi_lim, 1, 
-                                 ret_mode='subband', strict=False)
-        if coch.shape[0] > n_channels:
-            start_idx = (coch.shape[0] - n_channels) // 2
-            coch = coch[start_idx:start_idx + n_channels]
-        cochleagrams.append(coch)
-    coch_stereo = np.stack(cochleagrams, axis=2).astype(np.float32)
-    
-    # Downsample to 8kHz and Rectify
-    downsample_filter, ratio = make_downsample_filter()
-    downsampled = np.zeros((n_channels, coch_stereo.shape[1] // ratio, 2), dtype=np.float32)
-    for ear in range(2):
-        for ch in range(n_channels):
-            filtered = np.convolve(coch_stereo[ch, :, ear], downsample_filter, mode='same')
-            downsampled[ch, :, ear] = filtered[::ratio][:downsampled.shape[1]]
-    
-    downsampled = np.maximum(downsampled, 0) # ReLU
-    
-    # Ensure exact length
-    if downsampled.shape[1] < final_samples:
-        pad_width = final_samples - downsampled.shape[1]
-        downsampled = np.pad(downsampled, ((0, 0), (0, pad_width), (0, 0)))
-    else:
-        downsampled = downsampled[:, :final_samples, :]
-        
-    return downsampled
+def parse_tfrecord_fn(example_proto):
+    feature_description = {
+        'train/azim':         tf.io.FixedLenFeature([], tf.int64),
+        'train/elev':         tf.io.FixedLenFeature([], tf.int64),
+        'train/class_num':    tf.io.FixedLenFeature([], tf.int64),
+        'train/image':        tf.io.FixedLenFeature([], tf.string),
+        'train/image_height': tf.io.FixedLenFeature([], tf.int64),
+        'train/image_width':  tf.io.FixedLenFeature([], tf.int64),
+        'train/click_type':   tf.io.FixedLenFeature([], tf.int64, default_value=0),
+    }
+    parsed = tf.io.parse_single_example(example_proto, feature_description)
+    image = tf.io.decode_raw(parsed['train/image'], tf.float32)
+    height = tf.cast(parsed['train/image_height'], tf.int32)
+    width  = tf.cast(parsed['train/image_width'],  tf.int32)
+    image  = tf.reshape(image, (height, width, 2))
+    label      = parsed['train/class_num']
+    click_type = parsed['train/click_type']
+    return image, label, click_type
 
-def get_dataset(data_dir):
-    files = glob.glob(os.path.join(data_dir, "*.wav"))
-    print(f"Found {len(files)} items in {data_dir}. Extracting cochleagrams (this takes a moment)...")
-    
-    inputs, labels = [], []
-    for f in files:
-        # Assumes filename format: anything_azXXX_anything.wav  e.g., echo_az245_001.wav
-        # Extract azimuth value
-        try:
-            filename = os.path.basename(f)
-            # Find the 'az' token and get the number after it
-            az_str = [part for part in filename.replace('_', '-').split('-') if "az" in part][0]
-            az = int(az_str.replace("az", ""))
-            if az < 0: az += 360
-            
-            # Map absolute degree to bin index (5-deg bins)
-            az_bin = az // 5
-            
-            # Compute Cochleagram
-            audio, sr = load_wav_file(f)
-            features = wav_to_model_input(audio, sr)
-            
-            inputs.append(features)
-            labels.append(az_bin)
-            
-            if len(inputs) % 100 == 0:
-                print(f"Processed {len(inputs)} / {len(files)}...")
-        except Exception as e:
-            print(f"Error parsing file {f}: {e}")
-            
-    return np.array(inputs, dtype=np.float32), np.array(labels, dtype=np.int64)
+
+def make_pipeline(shard_paths, batch_size, shuffle=True):
+    """
+    Build a tf.data pipeline from a list of TFRecord shard paths.
+    When shuffle=True (training), we interleave multiple shards in parallel
+    so 0-click and 1-click examples are deeply mixed inside every batch.
+    """
+    file_ds = tf.data.Dataset.from_tensor_slices(shard_paths)
+    if shuffle:
+        file_ds = file_ds.shuffle(buffer_size=len(shard_paths))
+
+    record_ds = file_ds.interleave(
+        lambda path: tf.data.TFRecordDataset(path, compression_type='GZIP'),
+        cycle_length=min(10, len(shard_paths)),
+        num_parallel_calls=tf.data.experimental.AUTOTUNE,
+    )
+    record_ds = record_ds.map(parse_tfrecord_fn,
+                              num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    if shuffle:
+        record_ds = record_ds.shuffle(buffer_size=2000)
+    record_ds = record_ds.batch(batch_size, drop_remainder=True)
+    record_ds = record_ds.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+
+    iterator    = tf.compat.v1.data.make_initializable_iterator(record_ds)
+    next_element = iterator.get_next()
+    return iterator, next_element
+
+
+def count_records(shard_paths):
+    """Count total records across a list of TFRecord shards."""
+    n = 0
+    opts = tf.io.TFRecordOptions(
+        tf.compat.v1.io.TFRecordCompressionType.GZIP)
+    for path in shard_paths:
+        for _ in tf.compat.v1.python_io.tf_record_iterator(path, options=opts):
+            n += 1
+    return n
+
+
+def split_shards(all_shards, val_fraction=0.2):
+    """
+    Sort shards deterministically, then split into (train_shards, val_shards).
+    We separate 0-click and 1-click shards before splitting so
+    both sets end up balanced.
+    Sorting (not shuffling) ensures the same shards always go to train vs val
+    regardless of how many times finetune_custom.py is rerun.
+    """
+    shards_0 = sorted([s for s in all_shards if '0click' in os.path.basename(s)])
+    shards_1 = sorted([s for s in all_shards if '1click' in os.path.basename(s)])
+
+    def holdout(lst, frac):
+        n_val = max(1, int(len(lst) * frac))
+        # Take val from the end so the split is stable as new shards are added
+        return lst[:-n_val], lst[-n_val:]
+
+    train_0, val_0 = holdout(shards_0, val_fraction)
+    train_1, val_1 = holdout(shards_1, val_fraction)
+
+    train_shards = train_0 + train_1
+    val_shards   = val_0   + val_1
+    return train_shards, val_shards
+
+
+# ─────────────────────────────────────────────────────────
+#  Per-click-type accuracy helper (runs in NumPy, no graph)
+# ─────────────────────────────────────────────────────────
+
+def split_accuracy(preds, labels, click_types):
+    """Returns (acc_0click, acc_1click, n_0click, n_1click)."""
+    correct = (preds == labels)
+    m0 = (click_types == 0)
+    m1 = (click_types == 1)
+    acc0 = float(correct[m0].mean()) if m0.any() else float('nan')
+    acc1 = float(correct[m1].mean()) if m1.any() else float('nan')
+    return acc0, acc1, int(m0.sum()), int(m1.sum())
+
+
+# ─────────────────────────────────────────────────────────
+#  Main
+# ─────────────────────────────────────────────────────────
 
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', required=True, help="Directory with the 7200 wav files")
-    parser.add_argument('--model_dir', required=True, help="Path to models/net1 containing original checkpoints")
-    parser.add_argument('--output_dir', required=True, help="Where to save finetuned checkpoints")
-    parser.add_argument('--epochs', type=int, default=20)
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--lr', type=float, default=5e-5)
+    parser.add_argument('--tfrecords_dir', required=True,
+                        help="Directory containing *.tfrecords shards")
+    parser.add_argument('--model_dir',   required=True,
+                        help="Path to original checkpoint (e.g. models/net1)")
+    parser.add_argument('--output_dir',  required=True,
+                        help="Where to save finetuned checkpoints")
+    parser.add_argument('--log_dir',     default='logs',
+                        help="TensorBoard log directory")
+    parser.add_argument('--epochs',      type=int,   default=20)
+    parser.add_argument('--batch_size',  type=int,   default=16)
+    parser.add_argument('--lr',          type=float, default=5e-5)
+    parser.add_argument('--val_fraction',type=float, default=0.2,
+                        help="Fraction of shards to hold out for validation")
+    parser.add_argument('--original_eval_shard', default='data/data_original_eval.tfrecords',
+                        help="Pre-downsampled original-data shard for forgetting eval "
+                             "(created by create_original_eval_shard.py). "
+                             "Skipped if the file does not exist.")
     args = parser.parse_args()
 
-    # 1. Load Data
-    X_train, Y_train = get_dataset(args.data_dir)
-    print(f"Dataset shape: X={X_train.shape}, Y={Y_train.shape}")
-    
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
+    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(os.path.join(args.log_dir, 'train'),    exist_ok=True)
+    os.makedirs(os.path.join(args.log_dir, 'val'),      exist_ok=True)
+    os.makedirs(os.path.join(args.log_dir, 'original'), exist_ok=True)
 
-    # 2. Build Graph
+    use_orig_eval = os.path.exists(args.original_eval_shard)
+    if use_orig_eval:
+        print(f"Forgetting eval shard: {args.original_eval_shard}")
+    else:
+        print(f"[INFO] No forgetting eval shard found at '{args.original_eval_shard}'. "
+              f"Run create_original_eval_shard.py to enable acc_original tracking.")
+
+    # ── 1. Discover and split shards ──────────────────────
+    all_shards = glob.glob(os.path.join(args.tfrecords_dir, '*.tfrecords'))
+    if not all_shards:
+        print(f"Error: No .tfrecords found in {args.tfrecords_dir}")
+        return
+
+    train_shards, val_shards = split_shards(all_shards, args.val_fraction)
+    print(f"Shards  →  Train: {len(train_shards)}  |  Val: {len(val_shards)}")
+
+    print("Counting training records (one-time scan)...")
+    n_train = count_records(train_shards)
+    n_val   = count_records(val_shards)
+    print(f"Records →  Train: {n_train}  |  Val: {n_val}")
+
+    batches_per_epoch = n_train // args.batch_size
+    val_batches       = n_val   // args.batch_size
+
+    # ── 2. Build TF graph ─────────────────────────────────
     tf.compat.v1.reset_default_graph()
-    config_array = np.load(os.path.join(args.model_dir, 'config_array.npy'), allow_pickle=True)
-    
-    # Remap everything to single GPU/CPU
-    target_device = '/gpu:0'
+    config_array = np.load(
+        os.path.join(args.model_dir, 'config_array.npy'), allow_pickle=True)
+
+    # Remap everything to single GPU
     def remap_devices(arr):
-        if isinstance(arr, np.ndarray): return np.array([remap_devices(x) for x in arr], dtype=object)
-        elif isinstance(arr, list): return [remap_devices(x) for x in arr]
-        elif isinstance(arr, str) and '/gpu' in arr.lower(): return target_device
+        if isinstance(arr, np.ndarray):
+            return np.array([remap_devices(x) for x in arr], dtype=object)
+        if isinstance(arr, list):
+            return [remap_devices(x) for x in arr]
+        if isinstance(arr, str) and '/gpu' in arr.lower():
+            return '/gpu:0'
         return arr
     config_array = remap_devices(config_array)
 
     from NetBuilder_valid_pad import NetBuilder
-    input_placeholder = tf.compat.v1.placeholder(tf.float32, [None, 39, 8000, 2], name='input')
-    labels_placeholder = tf.compat.v1.placeholder(tf.int64, [None], name='labels')
-    
-    # Non-linear scaling as in original network
-    nonlin = tf.pow(input_placeholder, 0.3)
-    
-    net = NetBuilder()
-    out = net.build(config_array, nonlin, training_state=True, dropout_training_state=True,
-                    filter_dtype=tf.float32, padding='VALID', n_classes_localization=504,
-                    n_classes_recognition=780, branched=False, regularizer=None)
 
-    # Calculate classification loss
-    cost = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=out, labels=labels_placeholder))
-    
-    # Accuracy metric
-    correct_pred = tf.equal(tf.argmax(out, 1), labels_placeholder)
-    accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
+    input_ph  = tf.compat.v1.placeholder(
+        tf.float32, [args.batch_size, 39, 8000, 2], name='input')
+    labels_ph = tf.compat.v1.placeholder(
+        tf.int64, [args.batch_size], name='labels')
 
-    # Optimizer (All layers un-frozen)
-    update_ops = tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.UPDATE_OPS) # Needed for BatchNorm
+    nonlin = tf.pow(input_ph, 0.3)
+    net    = NetBuilder()
+    out    = net.build(config_array, nonlin,
+                       training_state=True, dropout_training_state=True,
+                       filter_dtype=tf.float32, padding='VALID',
+                       n_classes_localization=504,
+                       n_classes_recognition=780,
+                       branched=False, regularizer=None)
+
+    cost     = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
+                    logits=out, labels=labels_ph))
+    preds_op = tf.argmax(out, 1)  # used for per-click-type accuracy in NumPy
+
+    update_ops = tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(update_ops):
-        optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=args.lr, epsilon=1e-4).minimize(cost)
+        optimizer = tf.compat.v1.train.AdamOptimizer(
+            learning_rate=args.lr, epsilon=1e-4).minimize(cost)
 
-    # 3. Training Loop
+    # TensorBoard summaries — scalars written from Python via feed-dict
+    loss_ph     = tf.compat.v1.placeholder(tf.float32, name='loss_summary_ph')
+    acc_ph      = tf.compat.v1.placeholder(tf.float32, name='acc_summary_ph')
+    acc0_ph     = tf.compat.v1.placeholder(tf.float32, name='acc0_summary_ph')
+    acc1_ph     = tf.compat.v1.placeholder(tf.float32, name='acc1_summary_ph')
+    orig_acc_ph = tf.compat.v1.placeholder(tf.float32, name='orig_acc_ph')
+    tf.compat.v1.summary.scalar('loss',          loss_ph)
+    tf.compat.v1.summary.scalar('accuracy',      acc_ph)
+    tf.compat.v1.summary.scalar('acc_0click',    acc0_ph)
+    tf.compat.v1.summary.scalar('acc_1click',    acc1_ph)
+    summary_op = tf.compat.v1.summary.merge_all()
+    orig_summary_op = tf.compat.v1.summary.scalar('acc_original', orig_acc_ph)
+
+    # ── 3. Data iterators (built after graph, before session) ──
+    train_iter, train_next = make_pipeline(train_shards, args.batch_size, shuffle=True)
+    val_iter,   val_next   = make_pipeline(val_shards,   args.batch_size, shuffle=False)
+    if use_orig_eval:
+        orig_iter, orig_next = make_pipeline([args.original_eval_shard],
+                                             args.batch_size, shuffle=False)
+        orig_batches = count_records([args.original_eval_shard]) // args.batch_size
+
+    # ── 4. Session + weight restore ───────────────────────
     sess = tf.compat.v1.Session(config=config)
     sess.run(tf.compat.v1.global_variables_initializer())
 
-    # Restore the original weights!
     saver = tf.compat.v1.train.Saver(max_to_keep=3)
-    # Search for the checkpoint file dynamically
-    chkpt = tf.train.get_checkpoint_state(args.model_dir)
-    if chkpt and chkpt.model_checkpoint_path:
-        ckpt_path = chkpt.model_checkpoint_path
+
+    # Resume from output_dir if a checkpoint already exists there,
+    # otherwise fall back to the pre-trained model_dir weights.
+    resume_ckpt = tf.train.get_checkpoint_state(args.output_dir)
+    if resume_ckpt and resume_ckpt.model_checkpoint_path:
+        restore_path = resume_ckpt.model_checkpoint_path
+        print(f"Resuming finetuning from: {restore_path}")
     else:
-        # Fallback if checkpoint state file is missing
-        ckpt_path = os.path.join(args.model_dir, 'model.ckpt-100000')
-    
-    print(f"Restoring old weights from: {ckpt_path}")
-    saver.restore(sess, ckpt_path)
-    
-    print("\n--- Starting Finetuning ---")
-    n_samples = X_train.shape[0]
-    indices = np.arange(n_samples)
-    
+        pretrain_ckpt = tf.train.get_checkpoint_state(args.model_dir)
+        if pretrain_ckpt and pretrain_ckpt.model_checkpoint_path:
+            restore_path = pretrain_ckpt.model_checkpoint_path
+        else:
+            restore_path = os.path.join(args.model_dir, 'model.ckpt-100000')
+        print(f"Starting fresh finetuning from: {restore_path}")
+
+    saver.restore(sess, restore_path)
+
+    train_writer = tf.compat.v1.summary.FileWriter(
+        os.path.join(args.log_dir, 'train'), sess.graph)
+    val_writer   = tf.compat.v1.summary.FileWriter(
+        os.path.join(args.log_dir, 'val'))
+    orig_writer  = tf.compat.v1.summary.FileWriter(
+        os.path.join(args.log_dir, 'original'))
+
+    global_step = 0
+
+    # ── 5. Training loop ──────────────────────────────────
+    print("\n─── Starting Finetuning ───")
+    print(f"    Epochs: {args.epochs}  |  Batch: {args.batch_size}  |  LR: {args.lr}")
+    print(f"    ~{batches_per_epoch} train batches / epoch")
+    print(f"    ~{val_batches} validation batches / epoch\n")
+
     for epoch in range(args.epochs):
-        np.random.shuffle(indices)
-        epoch_loss = 0
-        epoch_acc = 0
-        batches = 0
-        
-        for start_idx in range(0, n_samples, args.batch_size):
-            batch_idx = indices[start_idx:start_idx + args.batch_size]
-            batch_x = X_train[batch_idx]
-            batch_y = Y_train[batch_idx]
-            
-            _, loss_val, acc_val = sess.run([optimizer, cost, accuracy], 
-                                            feed_dict={input_placeholder: batch_x, labels_placeholder: batch_y})
-            
-            epoch_loss += loss_val
-            epoch_acc += acc_val
-            batches += 1
-            
-        print(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss/batches:.4f}, Accuracy: {epoch_acc/batches:.4f}")
-        
-    print("Saving finetuned model...")
-    save_path = saver.save(sess, os.path.join(args.output_dir, 'model.ckpt'), global_step=args.epochs)
-    print(f"Model saved to: {save_path}")
-    print("Done! You can now convert this new checkpoint using convert_to_tflite.py")
+        sess.run(train_iter.initializer)
+
+        e_loss = 0.0
+        e_correct = e_total = 0
+        e_correct0 = e_total0 = e_correct1 = e_total1 = 0
+
+        for b in range(batches_per_epoch):
+            try:
+                bx, by, bc = sess.run(train_next)
+            except tf.errors.OutOfRangeError:
+                break
+
+            _, loss_val, preds_val = sess.run(
+                [optimizer, cost, preds_op],
+                feed_dict={input_ph: bx, labels_ph: by})
+
+            correct = (preds_val == by)
+            e_loss     += loss_val
+            e_correct  += correct.sum()
+            e_total    += len(by)
+
+            m0, m1 = (bc == 0), (bc == 1)
+            e_correct0 += correct[m0].sum();  e_total0 += m0.sum()
+            e_correct1 += correct[m1].sum();  e_total1 += m1.sum()
+
+            global_step += 1
+
+            if (b + 1) % 50 == 0:
+                acc0 = correct[m0].mean() if m0.any() else float('nan')
+                acc1 = correct[m1].mean() if m1.any() else float('nan')
+                print(f"  Epoch {epoch+1} / Batch {b+1:4d}"
+                      f"  Loss: {loss_val:.4f}"
+                      f"  Acc: {correct.mean():.4f}"
+                      f"  [0-Click: {acc0:.2f}  1-Click: {acc1:.2f}]")
+
+        # ── Epoch-level train stats ──
+        e_acc  = e_correct  / e_total  if e_total  else 0
+        e_acc0 = e_correct0 / e_total0 if e_total0 else 0
+        e_acc1 = e_correct1 / e_total1 if e_total1 else 0
+        e_avg_loss = e_loss / batches_per_epoch
+
+        print(f"\n→ END EPOCH {epoch+1}/{args.epochs}"
+              f"  AvgLoss: {e_avg_loss:.4f}"
+              f"  Acc: {e_acc:.4f}"
+              f"  [0-Click: {e_acc0:.4f}  1-Click: {e_acc1:.4f}]")
+
+        # Write train summaries
+        summ = sess.run(summary_op, feed_dict={
+            loss_ph: e_avg_loss, acc_ph: e_acc,
+            acc0_ph: e_acc0, acc1_ph: e_acc1})
+        train_writer.add_summary(summ, epoch + 1)
+
+        # ── Validation pass ───────────────────────────────
+        sess.run(val_iter.initializer)
+        v_loss = 0.0
+        v_correct = v_total = 0
+        v_correct0 = v_total0 = v_correct1 = v_total1 = 0
+
+        for _ in range(val_batches):
+            try:
+                bx, by, bc = sess.run(val_next)
+            except tf.errors.OutOfRangeError:
+                break
+            loss_val, preds_val = sess.run(
+                [cost, preds_op],
+                feed_dict={input_ph: bx, labels_ph: by})
+
+            correct = (preds_val == by)
+            v_loss    += loss_val
+            v_correct += correct.sum()
+            v_total   += len(by)
+            m0, m1 = (bc == 0), (bc == 1)
+            v_correct0 += correct[m0].sum();  v_total0 += m0.sum()
+            v_correct1 += correct[m1].sum();  v_total1 += m1.sum()
+
+        v_acc  = v_correct  / v_total  if v_total  else 0
+        v_acc0 = v_correct0 / v_total0 if v_total0 else 0
+        v_acc1 = v_correct1 / v_total1 if v_total1 else 0
+        v_avg_loss = v_loss / val_batches if val_batches else 0
+
+        print(f"  VAL  Epoch {epoch+1}/{args.epochs}"
+              f"  AvgLoss: {v_avg_loss:.4f}"
+              f"  Acc: {v_acc:.4f}"
+              f"  [0-Click: {v_acc0:.4f}  1-Click: {v_acc1:.4f}]")
+
+        # Write val summaries
+        summ = sess.run(summary_op, feed_dict={
+            loss_ph: v_avg_loss, acc_ph: v_acc,
+            acc0_ph: v_acc0, acc1_ph: v_acc1})
+        val_writer.add_summary(summ, epoch + 1)
+
+        # ── Forgetting eval on original data ─────────────
+        if use_orig_eval:
+            sess.run(orig_iter.initializer)
+            o_correct = o_total = 0
+            for _ in range(orig_batches):
+                try:
+                    bx, by, _ = sess.run(orig_next)
+                except tf.errors.OutOfRangeError:
+                    break
+                preds_val = sess.run(preds_op, feed_dict={input_ph: bx, labels_ph: by})
+                o_correct += (preds_val == by).sum()
+                o_total   += len(by)
+            o_acc = o_correct / o_total if o_total else 0.0
+            print(f"  ORIG Epoch {epoch+1}/{args.epochs}"
+                  f"  acc_original: {o_acc:.4f}  ({o_correct}/{o_total})")
+            summ = sess.run(orig_summary_op, feed_dict={orig_acc_ph: o_acc})
+            orig_writer.add_summary(summ, epoch + 1)
+            orig_writer.flush()
+
+        # ── Save checkpoint ───────────────────────────────
+        ckpt_path = saver.save(
+            sess,
+            os.path.join(args.output_dir, 'model.ckpt'),
+            global_step=epoch + 1)
+        print(f"  Checkpoint saved: {ckpt_path}\n")
+
+    train_writer.close()
+    val_writer.close()
+    orig_writer.close()
+    print("Done!  Run:  tensorboard --logdir logs/")
+    print(f"Final checkpoint in: {args.output_dir}")
+    print("Convert with:  python convert_to_tflite.py")
+
 
 if __name__ == '__main__':
     main()

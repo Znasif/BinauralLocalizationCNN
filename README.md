@@ -16,21 +16,43 @@ Note: Before running, please change the model save folder to point to your direc
 To aid reproducibility and decrease setup time we provide a [Singularity Image](https://sylabs.io/singularity/) that contains all packages necessary to run the code without any further setup. The image is available on dropbox here: https://www.dropbox.com/s/ey74fiw4uquww0n/tfv1.13_tcmalloc.simg?dl=0
 
 
-# Docker instructions for Ampere (and Turing?) Architecture
+# Finetuning Workflow
+
+## One-time setup — create the forgetting eval shard (run once, in Docker)
 ```bash
-docker run -it --gpus all -v /mnt/d/Projects/BinauralLocalizationCNN:/app   nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash
-# Navigate to app
+# Inside Docker (after cd ../app and pip install):
+python create_original_eval_shard.py --data_dir data --output data/data_original_eval.tfrecords --n_records 200
+```
+This downsamples 200 records from the original 48kHz data to 8kHz and saves them as a TFRecord.
+Only needed once; the file is reused on every subsequent run.
+
+## Terminal 1 — Docker (GPU finetuning + forgetting eval, all-in-one)
+```bash
+docker run -it --gpus all -v /mnt/d/Projects/BinauralLocalizationCNN:/app nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash
 cd ../app
-# After navigating to app:
 pip install --upgrade pip && pip install "numpy<1.20" "matplotlib<3.6" scipy seaborn
-# Then run the inference script. Sample index can be between 0 and 199:
+# Finetune + forgetting eval each epoch (acc_original written to logs/original/)
+python finetune_custom.py --tfrecords_dir ./echo_finetune_tfrecords/ --model_dir models/net1 --output_dir checkpoints_finetuned --log_dir logs --epochs 20 --batch_size 16 --lr 5e-5
+```
+
+## Terminal 2 — TensorBoard
+```bash
+tensorboard --logdir /mnt/d/Projects/BinauralLocalizationCNN/logs/
+# Open http://localhost:6006 — shows train, val, and original (acc_original) all epoch-aligned
+```
+
+# Inference only (no Docker needed)
+```bash
+conda activate rapids
+python test_inference_tflite.py --model_file ./models/net1/model.tflite --wav_file echo/az-100_tdist100_Idist100_fs96000.wav
+```
+
+# Original Docker inference commands
+```bash
+docker run -it --gpus all -v /mnt/d/Projects/BinauralLocalizationCNN:/app nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash
+cd ../app
+pip install --upgrade pip && pip install "numpy<1.20" "matplotlib<3.6" scipy seaborn
 python test_inference_minimal.py --model_dir models/net1 --tfrecord data/train0.tfrecords --plot_output=./plots/ --use_gpu
 python test_inference_minimal.py --model_dir models/net1 --wav_file=echo/az-100_tdist100_Idist100_fs96000.wav --plot_output=./plots/ --use_gpu
 python test_inference_minimal.py --model_dir models/net1 --wav_folder=echo/ --plot_output=./plots/ --use_gpu
-```
-
-# If using TF2 environment without docker
-
-```bash
-python test_inference_tflite.py --model_file ./models/net1/model.tflite --wav_file echo/az-100_tdist100_Idist100_fs96000.wav
 ```

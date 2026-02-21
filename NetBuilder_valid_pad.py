@@ -66,7 +66,7 @@ class NetBuilder:
                             #print(self.input)
 
                         elif element[0]=='bn':
-                            self.input=tf.layers.batch_normalization(self.input,training=training_state)
+                            self.input=tf.compat.v1.layers.batch_normalization(self.input,training=training_state)
                             #print(element)
                             #print(self.input)
                         
@@ -94,7 +94,7 @@ class NetBuilder:
                             #print(self.input)
 
                         elif element[0]=='fc_bn':
-                            self.input=tf.cast(tf.layers.batch_normalization(self.input,training=training_state),filter_dtype)
+                            self.input=tf.cast(tf.compat.v1.layers.batch_normalization(self.input,training=training_state),filter_dtype)
                             #print(element)
                             #print(self.input)
                             
@@ -104,7 +104,7 @@ class NetBuilder:
                             #print(self.input)
                         
                         elif element[0]=='dropout':
-                            self.input=tf.layers.dropout(self.input,training=dropout_training_state)
+                            self.input=tf.compat.v1.layers.dropout(self.input,training=dropout_training_state)
                             #print(element)
                             #print(self.input)
                    
@@ -164,7 +164,7 @@ class NetBuilder:
                             #print(self.input1)
 
                         elif element[0]=='bn':
-                            self.input1=tf.layers.batch_normalization(self.input1,training=training_state)
+                            self.input1=tf.compat.v1.layers.batch_normalization(self.input1,training=training_state)
                             #print(element)
                             #print(self.input1)
                         
@@ -191,7 +191,7 @@ class NetBuilder:
                             #print(self.input1)
 
                         elif element[0]=='fc_bn':
-                            self.input1=tf.cast(tf.layers.batch_normalization(self.input1,training=training_state),filter_dtype)
+                            self.input1=tf.cast(tf.compat.v1.layers.batch_normalization(self.input1,training=training_state),filter_dtype)
                             #print(element)
                             #print(self.input1)
                             
@@ -201,7 +201,7 @@ class NetBuilder:
                             #print(self.input1)
                         
                         elif element[0]=='dropout':
-                            self.input1=tf.layers.dropout(self.input1,training=dropout_training_state)
+                            self.input1=tf.compat.v1.layers.dropout(self.input1,training=dropout_training_state)
                             #print(element)
                             #print(self.input1)
                    
@@ -245,7 +245,7 @@ class NetBuilder:
                             #print(self.input2)
 
                         elif element[0]=='bn':
-                            self.input2=tf.layers.batch_normalization(self.input2,training=training_state)
+                            self.input2=tf.compat.v1.layers.batch_normalization(self.input2,training=training_state)
                             #print(element)
                             #print(self.input2)
                         
@@ -272,7 +272,7 @@ class NetBuilder:
                             #print(self.input2)
 
                         elif element[0]=='fc_bn':
-                            self.input2=tf.cast(tf.layers.batch_normalization(self.input2,training=training_state),filter_dtype)
+                            self.input2=tf.cast(tf.compat.v1.layers.batch_normalization(self.input2,training=training_state),filter_dtype)
                             #print(element)
                             #print(self.input2)
 
@@ -282,7 +282,7 @@ class NetBuilder:
                             #print(self.input2)
                         
                         elif element[0]=='dropout':
-                            self.input2=tf.layers.dropout(self.input2,training=dropout_training_state)
+                            self.input2=tf.compat.v1.layers.dropout(self.input2,training=dropout_training_state)
                             #print(element)
                             #print(self.input2)
                    

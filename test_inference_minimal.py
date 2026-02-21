@@ -446,10 +446,14 @@ def generate_inputs(args, model_dir):
                 audio, sr = load_wav_file(file_path)
                 coch = wav_to_cochleagram(audio, sr)
                 az = filename.split("az")[1].split("_")[0]
+                ev = filename.split("el")[1].split("_")[0]
                 az = int(az)
+                ev = int(ev)
                 if az < 0:
                     az += 360
-                metadata = {'azimuth': az, 'elevation': 0}
+                if ev < 0:
+                    continue
+                metadata = {'azimuth': az, 'elevation': ev}
                 png_file = os.path.splitext(filename)[0] + ".png"
                 yield coch, metadata, png_file
         return
@@ -460,7 +464,6 @@ def generate_inputs(args, model_dir):
     metadata = {'source': 'dummy'}
     png_file = ""
     yield coch, metadata, png_file
-
 
 def main():
     import argparse
