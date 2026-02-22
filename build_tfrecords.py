@@ -121,8 +121,12 @@ def build_tfrecords(data_dir, output_file_base):
     
     state_labels = {0: '0click', 1: '1click'}
     
+    import random
+    random.seed(42)  # Deterministic shuffle so we can recreate exact same shards if needed
+    
     for c_type, label in state_labels.items():
         category_files = valid_files[c_type]
+        random.shuffle(category_files)
         num_shards = (len(category_files) + RECORDS_PER_SHARD - 1) // RECORDS_PER_SHARD
         
         for shard_idx in range(num_shards):

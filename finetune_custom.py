@@ -109,6 +109,24 @@ def split_accuracy(preds, labels, click_types):
     acc1 = float(correct[m1].mean()) if m1.any() else float('nan')
     return acc0, acc1, int(m0.sum()), int(m1.sum())
 
+def calc_mae(preds, labels):
+    # Classes: 504 total = 7 elevations * 72 azimuths
+    # az_bin = class % 72
+    # el_bin = class // 72
+    p_az = (preds % 72) * 5
+    p_el = (preds // 72) * 10
+    
+    l_az = (labels % 72) * 5
+    l_el = (labels // 72) * 10
+    
+    # Handle azimuth wraparound natively (e.g. 355 vs 0 is 5 deg, not 355 deg)
+    diff_az = np.abs(p_az - l_az)
+    err_az = np.minimum(diff_az, 360 - diff_az)
+    
+    err_el = np.abs(p_el - l_el)
+    
+    return err_az.sum(), err_el.sum()
+
 
 # ─────────────────────────────────────────────────────────
 #  Main
@@ -134,6 +152,14 @@ def main():
                         help="Pre-downsampled original-data shard for forgetting eval "
                              "(created by create_original_eval_shard.py). "
                              "Skipped if the file does not exist.")
+    parser.add_argument('--freeze_conv', action='store_true',
+                        help="Freeze all conv/BN layers; only train fully-connected layers. "
+                             "Reduces overfitting when the finetune dataset is small.")
+    parser.add_argument('--weight_decay', type=float, default=0.0,
+                        help="L2 weight decay coefficient (e.g. 1e-4). 0 = disabled.")
+    parser.add_argument('--save_best_val', action='store_true',
+                        help="Also save the checkpoint with the highest val acc_0click "
+                             "as best_val.ckpt (in addition to the rolling checkpoints).")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -199,12 +225,32 @@ def main():
 
     cost     = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
                     logits=out, labels=labels_ph))
-    preds_op = tf.argmax(out, 1)  # used for per-click-type accuracy in NumPy
+    preds_op = tf.argmax(out, 1)
+
+    # Optionally freeze conv/BN vars — only compute gradients for FC layers
+    if args.freeze_conv:
+        trainable = [v for v in tf.compat.v1.trainable_variables()
+                     if '_fc_' in v.name or '_out_' in v.name]
+        if not trainable:
+            print("[WARN] --freeze_conv: no FC variables matched by name; training all vars.")
+            trainable = None
+        else:
+            print(f"--freeze_conv: training {len(trainable)} FC variables only.")
+    else:
+        trainable = None  # train everything
+
+    # L2 weight decay (applied to all trainable vars; see per-exp copies for scoped variant)
+    if args.weight_decay > 0:
+        l2_vars = [v for v in tf.compat.v1.trainable_variables()
+                   if 'bias' not in v.name]
+        l2_loss = args.weight_decay * tf.add_n([tf.nn.l2_loss(v) for v in l2_vars])
+        cost    = cost + l2_loss
 
     update_ops = tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(update_ops):
         optimizer = tf.compat.v1.train.AdamOptimizer(
-            learning_rate=args.lr, epsilon=1e-4).minimize(cost)
+            learning_rate=args.lr, epsilon=1e-4).minimize(cost, var_list=trainable)
+
 
     # TensorBoard summaries — scalars written from Python via feed-dict
     loss_ph     = tf.compat.v1.placeholder(tf.float32, name='loss_summary_ph')
@@ -216,6 +262,12 @@ def main():
     tf.compat.v1.summary.scalar('accuracy',      acc_ph)
     tf.compat.v1.summary.scalar('acc_0click',    acc0_ph)
     tf.compat.v1.summary.scalar('acc_1click',    acc1_ph)
+    
+    mae_az_ph = tf.compat.v1.placeholder(tf.float32, name='mae_az_summary_ph')
+    mae_el_ph = tf.compat.v1.placeholder(tf.float32, name='mae_el_summary_ph')
+    tf.compat.v1.summary.scalar('mae_az_deg', mae_az_ph)
+    tf.compat.v1.summary.scalar('mae_el_deg', mae_el_ph)
+    
     summary_op = tf.compat.v1.summary.merge_all()
     orig_summary_op = tf.compat.v1.summary.scalar('acc_original', orig_acc_ph)
 
@@ -257,6 +309,7 @@ def main():
         os.path.join(args.log_dir, 'original'))
 
     global_step = 0
+    best_val_acc0 = -1.0  # for --save_best_val
 
     # ── 5. Training loop ──────────────────────────────────
     print("\n─── Starting Finetuning ───")
@@ -270,6 +323,7 @@ def main():
         e_loss = 0.0
         e_correct = e_total = 0
         e_correct0 = e_total0 = e_correct1 = e_total1 = 0
+        e_mae_az = e_mae_el = 0.0
 
         for b in range(batches_per_epoch):
             try:
@@ -285,6 +339,10 @@ def main():
             e_loss     += loss_val
             e_correct  += correct.sum()
             e_total    += len(by)
+            
+            m_az, m_el  = calc_mae(preds_val, by)
+            e_mae_az   += m_az
+            e_mae_el   += m_el
 
             m0, m1 = (bc == 0), (bc == 1)
             e_correct0 += correct[m0].sum();  e_total0 += m0.sum()
@@ -305,16 +363,20 @@ def main():
         e_acc0 = e_correct0 / e_total0 if e_total0 else 0
         e_acc1 = e_correct1 / e_total1 if e_total1 else 0
         e_avg_loss = e_loss / batches_per_epoch
+        e_avg_mae_az = e_mae_az / e_total if e_total else 0
+        e_avg_mae_el = e_mae_el / e_total if e_total else 0
 
         print(f"\n→ END EPOCH {epoch+1}/{args.epochs}"
               f"  AvgLoss: {e_avg_loss:.4f}"
               f"  Acc: {e_acc:.4f}"
-              f"  [0-Click: {e_acc0:.4f}  1-Click: {e_acc1:.4f}]")
+              f"  [0-Click: {e_acc0:.4f}  1-Click: {e_acc1:.4f}]"
+              f"  MAE Degrees: [Az: {e_avg_mae_az:.1f}°  El: {e_avg_mae_el:.1f}°]")
 
         # Write train summaries
         summ = sess.run(summary_op, feed_dict={
             loss_ph: e_avg_loss, acc_ph: e_acc,
-            acc0_ph: e_acc0, acc1_ph: e_acc1})
+            acc0_ph: e_acc0, acc1_ph: e_acc1,
+            mae_az_ph: e_avg_mae_az, mae_el_ph: e_avg_mae_el})
         train_writer.add_summary(summ, epoch + 1)
 
         # ── Validation pass ───────────────────────────────
@@ -322,6 +384,7 @@ def main():
         v_loss = 0.0
         v_correct = v_total = 0
         v_correct0 = v_total0 = v_correct1 = v_total1 = 0
+        v_mae_az = v_mae_el = 0.0
 
         for _ in range(val_batches):
             try:
@@ -336,6 +399,11 @@ def main():
             v_loss    += loss_val
             v_correct += correct.sum()
             v_total   += len(by)
+            
+            m_az, m_el = calc_mae(preds_val, by)
+            v_mae_az  += m_az
+            v_mae_el  += m_el
+            
             m0, m1 = (bc == 0), (bc == 1)
             v_correct0 += correct[m0].sum();  v_total0 += m0.sum()
             v_correct1 += correct[m1].sum();  v_total1 += m1.sum()
@@ -344,16 +412,20 @@ def main():
         v_acc0 = v_correct0 / v_total0 if v_total0 else 0
         v_acc1 = v_correct1 / v_total1 if v_total1 else 0
         v_avg_loss = v_loss / val_batches if val_batches else 0
+        v_avg_mae_az = v_mae_az / v_total if v_total else 0
+        v_avg_mae_el = v_mae_el / v_total if v_total else 0
 
         print(f"  VAL  Epoch {epoch+1}/{args.epochs}"
               f"  AvgLoss: {v_avg_loss:.4f}"
               f"  Acc: {v_acc:.4f}"
-              f"  [0-Click: {v_acc0:.4f}  1-Click: {v_acc1:.4f}]")
+              f"  [0-Click: {v_acc0:.4f}  1-Click: {v_acc1:.4f}]"
+              f"  MAE Degrees: [Az: {v_avg_mae_az:.1f}°  El: {v_avg_mae_el:.1f}°]")
 
         # Write val summaries
         summ = sess.run(summary_op, feed_dict={
             loss_ph: v_avg_loss, acc_ph: v_acc,
-            acc0_ph: v_acc0, acc1_ph: v_acc1})
+            acc0_ph: v_acc0, acc1_ph: v_acc1,
+            mae_az_ph: v_avg_mae_az, mae_el_ph: v_avg_mae_el})
         val_writer.add_summary(summ, epoch + 1)
 
         # ── Forgetting eval on original data ─────────────
@@ -380,7 +452,14 @@ def main():
             sess,
             os.path.join(args.output_dir, 'model.ckpt'),
             global_step=epoch + 1)
-        print(f"  Checkpoint saved: {ckpt_path}\n")
+        print(f"  Checkpoint saved: {ckpt_path}")
+
+        if args.save_best_val and v_acc0 > best_val_acc0:
+            best_val_acc0 = v_acc0
+            best_path = saver.save(
+                sess, os.path.join(args.output_dir, 'best_val.ckpt'))
+            print(f"  ★ New best val acc_0click={v_acc0:.4f} → {best_path}")
+        print()
 
     train_writer.close()
     val_writer.close()

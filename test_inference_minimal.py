@@ -281,20 +281,7 @@ def load_tfrecord_sample(tfrecord_path, sample_index=None):
                 
                 # Try to reshape - the tfrecord stores data in different formats
                 # Based on tfrecords_iterator.py, stacked_channel format is [39, 48000, 2]
-                try:
-                    # Try stacked channel format first
-                    cochleagram = image_data.reshape(39, 48000, 2)
-                except ValueError:
-                    # Try non-stacked format [78, 48000] then convert
-                    try:
-                        cochleagram = image_data.reshape(78, 48000)
-                        # Convert to stacked format
-                        cochleagram = np.stack([cochleagram[:39], cochleagram[39:]], axis=2)
-                    except ValueError:
-                        # Try other possible shapes
-                        total_elements = len(image_data)
-                        print(f"Total elements in image: {total_elements}")
-                        raise ValueError(f"Cannot reshape image data with {total_elements} elements")
+                cochleagram = image_data.reshape(39, len(image_data) // (39 * 2), 2)
             else:
                 raise ValueError("No 'train/image' found in tfrecord")
             
@@ -475,6 +462,9 @@ def main():
     parser.add_argument('--sample_index', type=int, default=0, help='Sample index in tfrecord (default: 0)')
     parser.add_argument('--plot_output', default='', help='Path to save visualization plot (default: model_dir/inference_prediction.png)')
     parser.add_argument('--use_gpu', action='store_true', default=False, help='Enable GPU usage (default: False)')
+    parser.add_argument('--checkpoint', default='',
+                        help='Explicit checkpoint path to restore (e.g. experiments/exp01/checkpoints/model.ckpt-20). '
+                             'If omitted, restores model_dir/model.ckpt-100000 (original weights).')
     args = parser.parse_args()
 
     model_dir = os.path.abspath(args.model_dir)
@@ -544,8 +534,9 @@ def main():
     sess.run(tf.compat.v1.global_variables_initializer())
     
     saver = tf.compat.v1.train.Saver()
-    saver.restore(sess, os.path.join(model_dir, 'model.ckpt-100000'))
-    print("Checkpoint loaded!")
+    ckpt_path = args.checkpoint if args.checkpoint else os.path.join(model_dir, 'model.ckpt-100000')
+    saver.restore(sess, ckpt_path)
+    print(f"Checkpoint loaded: {ckpt_path}")
 
     if args.plot_output:
         import shutil
