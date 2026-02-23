@@ -1,9 +1,9 @@
 #!/bin/bash
-# Experiment 03 — Frozen conv layers, lr=1e-5, no weight decay
-# Fix of exp02 (which was killed due to L2 being applied to frozen conv weights)
-# Run from inside Docker: bash experiments/exp03_frozen_lr1e-5_fixed/run.sh
+# Experiment 03 — All layers, lr=5e-5, 20 epochs
+# Same as exp02 but with Az(FB) metric and is_training fix for val
+# Run from inside Docker: bash experiments/exp03_alllayers_lr5e-5_azfb/run.sh
 
-EXP_DIR="experiments/exp03_frozen_lr1e-5_fixed"
+EXP_DIR="experiments/exp03_alllayers_lr5e-5_azfb"
 
 tensorboard --logdir "${EXP_DIR}/logs/" --port 6006 &
 TB_PID=$!
@@ -15,10 +15,9 @@ python finetune_custom.py \
   --model_dir models/net1 \
   --output_dir "${EXP_DIR}/checkpoints" \
   --log_dir "${EXP_DIR}/logs" \
-  --epochs 30 \
+  --epochs 20 \
   --batch_size 16 \
-  --lr 1e-5 \
-  --freeze_conv \
+  --lr 5e-5 \
   --save_best_val
 
 kill $TB_PID
