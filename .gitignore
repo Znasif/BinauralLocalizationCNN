@@ -8,3 +8,8 @@ BinauralDataGen.txt
 *.png
 *.pdf
 *.txt
+*.wav
+/echo_finetune_tfrecords
+# Experiment outputs (binary) — tracked via run.sh + notes.md instead
+experiments/*/checkpoints/
+experiments/*/logs/

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import os
+os.environ['TF_USE_LEGACY_KERAS'] = '1'  # Force Keras 2 for tf.compat.v1.layers
 import argparse
 import numpy as np
 import tensorflow as tf
@@ -22,11 +23,11 @@ def remap_devices(arr):
         return target_device
     return arr
 
-def convert_to_tflite(model_dir, output_file):
+def convert_to_tflite(model_dir, output_file, config_path=None):
     print(f"Converting model in {model_dir} to TFLite...")
-    
+
     # Load config
-    config_path = os.path.join(model_dir, 'config_array.npy')
+    config_path = config_path or os.path.join(model_dir, 'config_array.npy')
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
         
@@ -103,13 +104,14 @@ def convert_to_tflite(model_dir, output_file):
 
         # Search locations
         search_modules = []
-        if hasattr(tf, 'lite'): search_modules.append(tf.lite)
         
-        # Check compat.v1.lite safely
+        # Check compat.v1.lite safely first (needed for from_session in TF2)
         try:
             if hasattr(tf.compat.v1, 'lite'): search_modules.append(tf.compat.v1.lite)
         except AttributeError:
             pass
+            
+        if hasattr(tf, 'lite'): search_modules.append(tf.lite)
             
         # Check contrib.lite safely
         try:
@@ -215,18 +217,22 @@ def main():
     parser = argparse.ArgumentParser(description='Convert BinauralLocalizationCNN model to TFLite')
     parser.add_argument('--model_dir', required=True, help='Directory containing model checkpoint (e.g., models/net1)')
     parser.add_argument('--output', help='Output .tflite file path. Defaults to model_dir/model.tflite')
-    
+    parser.add_argument('--config', default=None,
+                        help='Path to config_array.npy. Defaults to model_dir/config_array.npy')
+
     args = parser.parse_args()
-    
+
     model_dir = os.path.abspath(args.model_dir)
-    
+
     if args.output:
         output_file = args.output
     else:
         output_file = os.path.join(model_dir, 'model.tflite')
-        
+
+    config_path = os.path.abspath(args.config) if args.config else None
+
     try:
-        convert_to_tflite(model_dir, output_file)
+        convert_to_tflite(model_dir, output_file, config_path=config_path)
     except Exception as e:
         print(f"Error converting model: {e}")
         import traceback

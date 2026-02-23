@@ -83,6 +83,7 @@ tensorboard --logdir /mnt/d/Projects/BinauralLocalizationCNN/experiments/
 ```bash
 conda activate rapids
 python test_inference_tflite.py --model_file ./models/net1/model.tflite --wav_file echo/az-100_tdist100_Idist100_fs96000.wav
+python test_inference_tflite.py --model_file ./experiments/exp02_alllayers_lr5e-5_frozenbn/model.tflite --wav_file echo_finetune/EE1/az5_ML_clickEcho_samples/wavs/az5_el20_1click_distRange_80-120cm_onsetRange_50-200ms_fs96000_samp100.wav
 ```
 
 # Original Docker inference commands
@@ -91,7 +92,7 @@ docker run -it --gpus all -p 6006:6006 -v /mnt/d/Projects/BinauralLocalizationCN
 cd ../app
 pip install --upgrade pip && pip install "numpy<1.20" "matplotlib<3.6" scipy seaborn
 python test_inference_minimal.py --model_dir models/net1 --tfrecord data/train0.tfrecords --plot_output=./plots/ --use_gpu
-python test_inference_minimal.py   --model_dir models/net1   --checkpoint experiments/exp01_baseline_lr5e-5/checkpoints/model.ckpt-20   --tfrecord data/data_original_eval.tfrecords   --plot_output ./plots/   --use_gpu
+python test_inference_minimal.py   --model_dir models/net1   --checkpoint experiments/exp02_alllayers_lr5e-5_frozenbn/checkpoints/model.ckpt-6   --tfrecord data/data_original_eval.tfrecords   --plot_output ./plots/   --use_gpu
 python test_inference_minimal.py --model_dir models/net1 --wav_file=echo/az-100_tdist100_Idist100_fs96000.wav --plot_output=./plots/ --use_gpu
 python test_inference_minimal.py --model_dir models/net1 --wav_folder=echo/ --plot_output=./plots/ --use_gpu
 ```

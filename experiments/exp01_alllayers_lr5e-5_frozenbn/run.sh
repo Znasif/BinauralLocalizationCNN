@@ -1,10 +1,9 @@
 #!/bin/bash
-# Experiment 02 — Frozen conv layers, lr=1e-5
-# NOTE: weight_decay was dropped — L2 on FC-only vars is negligible and adds instability
-# Use exp03 for the clean frozen run (this run was aborted at epoch 3 due to loss ~48)
-# Root cause: weight_decay was being applied to all vars including frozen conv weights
+# Experiment 02 — All layers, lr=1e-5, frozen BN stats, 10 epochs
+# Goal: preserve ORIG AzFB near 6° by limiting weight drift
+# Lower LR (1e-5) + fewer epochs (10) + frozen BN stats
 
-EXP_DIR="experiments/exp02_frozen_lr1e-5"
+EXP_DIR="experiments/exp01_alllayers_lr5e-5_frozenbn"
 
 tensorboard --logdir "${EXP_DIR}/logs/" --port 6006 &
 TB_PID=$!
@@ -13,13 +12,13 @@ trap "echo 'Stopping...'; kill $TB_PID; exit" INT TERM
 
 python finetune_custom.py \
   --tfrecords_dir ./echo_finetune_tfrecords/ \
-  --model_dir models/net1 \
+  --model_dir models/net2 \
   --output_dir "${EXP_DIR}/checkpoints" \
   --log_dir "${EXP_DIR}/logs" \
   --epochs 20 \
   --batch_size 16 \
-  --lr 5e-5
-
+  --lr 5e-5 \
+  --freeze_bn_stats \
+  --save_best_val
 
 kill $TB_PID
-

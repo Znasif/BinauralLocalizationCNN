@@ -10,7 +10,7 @@ class NetBuilder:
         self.layer_out1=0
         self.layer_out2=0
     
-    def build(self,config_array,subbands_batch,training_state,dropout_training_state,filter_dtype,padding,n_classes_localization,n_classes_recognition,branched,regularizer):
+    def build(self,config_array,subbands_batch,training_state,dropout_training_state,filter_dtype,padding,n_classes_localization,n_classes_recognition,branched,regularizer,bn_momentum=0.99):
 
 #      config_array=[[["/gpu:0"],['conv',[2,50,32],[1,4]],['relu'],['pool',[1,4]]],[["/gpu:1"],['conv',[4,20,64],[1,1]],['bn'],['relu'],['pool',[1,4]],['conv',[8,8,128],[1,1]],['bn'],['relu'],['pool',[1,4]],['conv',[8,8,256],[1,1]],['bn'],['relu'],['pool',[1,8]],['conv',[8,8,512],[1,1]],['bn'],['relu'],['pool',[2,2]]],[["/gpu:2"],['fc',512],['fc_bn'],['fc_relu'],['dropout'],['out']]]
 
@@ -66,7 +66,7 @@ class NetBuilder:
                             #print(self.input)
 
                         elif element[0]=='bn':
-                            self.input=tf.compat.v1.layers.batch_normalization(self.input,training=training_state)
+                            self.input=tf.compat.v1.layers.batch_normalization(self.input,training=training_state,momentum=bn_momentum)
                             #print(element)
                             #print(self.input)
                         
@@ -94,7 +94,7 @@ class NetBuilder:
                             #print(self.input)
 
                         elif element[0]=='fc_bn':
-                            self.input=tf.cast(tf.compat.v1.layers.batch_normalization(self.input,training=training_state),filter_dtype)
+                            self.input=tf.cast(tf.compat.v1.layers.batch_normalization(self.input,training=training_state,momentum=bn_momentum),filter_dtype)
                             #print(element)
                             #print(self.input)
                             
@@ -164,7 +164,7 @@ class NetBuilder:
                             #print(self.input1)
 
                         elif element[0]=='bn':
-                            self.input1=tf.compat.v1.layers.batch_normalization(self.input1,training=training_state)
+                            self.input1=tf.compat.v1.layers.batch_normalization(self.input1,training=training_state,momentum=bn_momentum)
                             #print(element)
                             #print(self.input1)
                         
@@ -191,7 +191,7 @@ class NetBuilder:
                             #print(self.input1)
 
                         elif element[0]=='fc_bn':
-                            self.input1=tf.cast(tf.compat.v1.layers.batch_normalization(self.input1,training=training_state),filter_dtype)
+                            self.input1=tf.cast(tf.compat.v1.layers.batch_normalization(self.input1,training=training_state,momentum=bn_momentum),filter_dtype)
                             #print(element)
                             #print(self.input1)
                             
@@ -245,7 +245,7 @@ class NetBuilder:
                             #print(self.input2)
 
                         elif element[0]=='bn':
-                            self.input2=tf.compat.v1.layers.batch_normalization(self.input2,training=training_state)
+                            self.input2=tf.compat.v1.layers.batch_normalization(self.input2,training=training_state,momentum=bn_momentum)
                             #print(element)
                             #print(self.input2)
                         
@@ -272,7 +272,7 @@ class NetBuilder:
                             #print(self.input2)
 
                         elif element[0]=='fc_bn':
-                            self.input2=tf.cast(tf.compat.v1.layers.batch_normalization(self.input2,training=training_state),filter_dtype)
+                            self.input2=tf.cast(tf.compat.v1.layers.batch_normalization(self.input2,training=training_state,momentum=bn_momentum),filter_dtype)
                             #print(element)
                             #print(self.input2)
 

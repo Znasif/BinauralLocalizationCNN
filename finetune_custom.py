@@ -139,6 +139,54 @@ def calc_mae(preds, labels):
     return err_az.sum(), err_el.sum(), err_az_fb.sum()
 
 
+def print_epoch_table(label, epoch_str, rows):
+    """Print a bordered table for epoch-end metrics.
+
+    rows: list of dicts, each with keys:
+        name    : str  ('all', '0-clk', '1-clk')
+        loss    : float or None
+        acc     : float (0-1)
+        n_ok    : int
+        n       : int
+        mae_az  : float (degrees)
+        mae_azfb: float (degrees)
+        mae_el  : float (degrees)
+    Values of float('nan') are displayed as '---'.
+    """
+    def f_loss(v):
+        return f'{v:6.2f}' if v is not None and v == v else '  ----'
+    def f_acc(v):
+        return f'{v*100:6.2f}' if v == v else '   ---'
+    def f_cnt(ok, n):
+        s = f'{ok}/{n}'
+        return f'{s:>10s}'
+    def f_deg(v):
+        return f'{v:6.1f}' if v == v else '   ---'
+
+    # Build rows: each column is fixed width, separated by 2 spaces
+    #   name(8) Loss(6) Acc%(6) n_ok/n(10) Az(6) AzFB(6) El(6)
+    col = (f'  │  {"":8s} {"Loss":>6s}  {"Acc%":>6s}  {"n_ok/n":>10s}'
+           f'  {"Az":>6s}  {"AzFB":>6s}  {"El":>6s}  │')
+    W = len(col) - 4  # inner width between │ markers (subtract '  │' prefix + '│' suffix)
+    hdr = f' {label} {epoch_str} '
+    top = f'  ┌─{hdr}{"─" * (W - len(hdr) - 1)}┐'
+    bot = f'  └{"─" * W}┘'
+
+    print(top)
+    print(col)
+    for r in rows:
+        line = (f'  │  {r["name"]:8s}'
+                f' {f_loss(r.get("loss"))}'
+                f'  {f_acc(r["acc"])}'
+                f'  {f_cnt(r["n_ok"], r["n"])}'
+                f'  {f_deg(r["mae_az"])}'
+                f'  {f_deg(r["mae_azfb"])}'
+                f'  {f_deg(r["mae_el"])}'
+                f'  │')
+        print(line)
+    print(bot)
+
+
 # ─────────────────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────────────────
@@ -168,6 +216,15 @@ def main():
                              "Reduces overfitting when the finetune dataset is small.")
     parser.add_argument('--weight_decay', type=float, default=0.0,
                         help="L2 weight decay coefficient (e.g. 1e-4). 0 = disabled.")
+    parser.add_argument('--bn_momentum', type=float, default=0.99,
+                        help="Batch normalization momentum for moving average updates. "
+                             "Default 0.99 (TF default). Higher values (e.g. 0.999) slow "
+                             "BN statistics drift during finetuning, reducing catastrophic "
+                             "forgetting on original data at the cost of slower BN adaptation.")
+    parser.add_argument('--freeze_bn_stats', action='store_true',
+                        help="Freeze BN running mean/variance (use pretrained stats). "
+                             "BN gamma/beta are still trainable. Prevents catastrophic "
+                             "forgetting of original-data BN statistics.")
     parser.add_argument('--save_best_val', action='store_true',
                         help="Also save the checkpoint with the highest val acc_0click "
                              "as best_val.ckpt (in addition to the rolling checkpoints).")
@@ -226,15 +283,17 @@ def main():
         tf.int64, [args.batch_size], name='labels')
 
     is_training = tf.compat.v1.placeholder(tf.bool, shape=(), name='is_training')
+    bn_training = False if args.freeze_bn_stats else is_training
 
     nonlin = tf.pow(input_ph, 0.3)
     net    = NetBuilder()
     out    = net.build(config_array, nonlin,
-                       training_state=is_training, dropout_training_state=is_training,
+                       training_state=bn_training, dropout_training_state=is_training,
                        filter_dtype=tf.float32, padding='VALID',
                        n_classes_localization=504,
                        n_classes_recognition=780,
-                       branched=False, regularizer=None)
+                       branched=False, regularizer=None,
+                       bn_momentum=args.bn_momentum)
 
     cost     = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
                     logits=out, labels=labels_ph))
@@ -261,9 +320,13 @@ def main():
             cost    = cost + l2_loss
             print(f"Weight decay: {args.weight_decay} applied to {len(l2_vars)} variables")
 
-    # Filter BN update_ops: when freeze_conv, only update FC-layer BN stats
+    # Filter BN update_ops
     all_update_ops = tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.UPDATE_OPS)
-    if args.freeze_conv and trainable:
+    if args.freeze_bn_stats:
+        update_ops = []  # no BN stats updates at all
+        print(f"--freeze_bn_stats: all BN UPDATE_OPS disabled "
+              f"(skipped {len(all_update_ops)} ops)")
+    elif args.freeze_conv and trainable:
         # Count conv BN layers in config to identify FC BN scope index
         n_conv_bn = 0
         for lst in config_array:
@@ -293,21 +356,45 @@ def main():
     acc_ph      = tf.compat.v1.placeholder(tf.float32, name='acc_summary_ph')
     acc0_ph     = tf.compat.v1.placeholder(tf.float32, name='acc0_summary_ph')
     acc1_ph     = tf.compat.v1.placeholder(tf.float32, name='acc1_summary_ph')
-    orig_acc_ph = tf.compat.v1.placeholder(tf.float32, name='orig_acc_ph')
     tf.compat.v1.summary.scalar('loss',          loss_ph)
     tf.compat.v1.summary.scalar('accuracy',      acc_ph)
     tf.compat.v1.summary.scalar('acc_0click',    acc0_ph)
     tf.compat.v1.summary.scalar('acc_1click',    acc1_ph)
-    
+
     mae_az_ph    = tf.compat.v1.placeholder(tf.float32, name='mae_az_summary_ph')
     mae_el_ph    = tf.compat.v1.placeholder(tf.float32, name='mae_el_summary_ph')
     mae_az_fb_ph = tf.compat.v1.placeholder(tf.float32, name='mae_az_fb_summary_ph')
     tf.compat.v1.summary.scalar('mae_az_deg', mae_az_ph)
     tf.compat.v1.summary.scalar('mae_el_deg', mae_el_ph)
     tf.compat.v1.summary.scalar('mae_az_fb_deg', mae_az_fb_ph)
-    
+
+    # Per-click-type MAE
+    mae_az_0ck_ph    = tf.compat.v1.placeholder(tf.float32, name='mae_az_0ck_ph')
+    mae_el_0ck_ph    = tf.compat.v1.placeholder(tf.float32, name='mae_el_0ck_ph')
+    mae_az_fb_0ck_ph = tf.compat.v1.placeholder(tf.float32, name='mae_az_fb_0ck_ph')
+    mae_az_1ck_ph    = tf.compat.v1.placeholder(tf.float32, name='mae_az_1ck_ph')
+    mae_el_1ck_ph    = tf.compat.v1.placeholder(tf.float32, name='mae_el_1ck_ph')
+    mae_az_fb_1ck_ph = tf.compat.v1.placeholder(tf.float32, name='mae_az_fb_1ck_ph')
+    tf.compat.v1.summary.scalar('mae_az_0click',    mae_az_0ck_ph)
+    tf.compat.v1.summary.scalar('mae_el_0click',    mae_el_0ck_ph)
+    tf.compat.v1.summary.scalar('mae_az_fb_0click', mae_az_fb_0ck_ph)
+    tf.compat.v1.summary.scalar('mae_az_1click',    mae_az_1ck_ph)
+    tf.compat.v1.summary.scalar('mae_el_1click',    mae_el_1ck_ph)
+    tf.compat.v1.summary.scalar('mae_az_fb_1click', mae_az_fb_1ck_ph)
+
     summary_op = tf.compat.v1.summary.merge_all()
-    orig_summary_op = tf.compat.v1.summary.scalar('acc_original', orig_acc_ph)
+
+    # Original-data eval summaries (separate from main summary_op)
+    orig_acc_ph        = tf.compat.v1.placeholder(tf.float32, name='orig_acc_ph')
+    orig_mae_az_ph     = tf.compat.v1.placeholder(tf.float32, name='orig_mae_az_ph')
+    orig_mae_el_ph     = tf.compat.v1.placeholder(tf.float32, name='orig_mae_el_ph')
+    orig_mae_az_fb_ph  = tf.compat.v1.placeholder(tf.float32, name='orig_mae_az_fb_ph')
+    orig_summary_op = tf.compat.v1.summary.merge([
+        tf.compat.v1.summary.scalar('acc_original',      orig_acc_ph),
+        tf.compat.v1.summary.scalar('orig_mae_az_deg',   orig_mae_az_ph),
+        tf.compat.v1.summary.scalar('orig_mae_el_deg',   orig_mae_el_ph),
+        tf.compat.v1.summary.scalar('orig_mae_az_fb_deg', orig_mae_az_fb_ph),
+    ])
 
     # ── 3. Data iterators (built after graph, before session) ──
     train_iter, train_next = make_pipeline(train_shards, args.batch_size, shuffle=True)
@@ -352,6 +439,10 @@ def main():
     # ── 5. Training loop ──────────────────────────────────
     print("\n─── Starting Finetuning ───")
     print(f"    Epochs: {args.epochs}  |  Batch: {args.batch_size}  |  LR: {args.lr}")
+    if args.freeze_bn_stats:
+        print(f"    BN stats: FROZEN (using pretrained running mean/variance)")
+    else:
+        print(f"    BN momentum: {args.bn_momentum}")
     print(f"    ~{batches_per_epoch} train batches / epoch")
     print(f"    ~{val_batches} validation batches / epoch\n")
 
@@ -362,6 +453,8 @@ def main():
         e_correct = e_total = 0
         e_correct0 = e_total0 = e_correct1 = e_total1 = 0
         e_mae_az = e_mae_el = e_mae_az_fb = 0.0
+        e_mae_az0 = e_mae_el0 = e_mae_az_fb0 = 0.0
+        e_mae_az1 = e_mae_el1 = e_mae_az_fb1 = 0.0
 
         for b in range(batches_per_epoch):
             try:
@@ -387,6 +480,13 @@ def main():
             e_correct0 += correct[m0].sum();  e_total0 += m0.sum()
             e_correct1 += correct[m1].sum();  e_total1 += m1.sum()
 
+            if m0.any():
+                az0, el0, azfb0 = calc_mae(preds_val[m0], by[m0])
+                e_mae_az0 += az0; e_mae_el0 += el0; e_mae_az_fb0 += azfb0
+            if m1.any():
+                az1, el1, azfb1 = calc_mae(preds_val[m1], by[m1])
+                e_mae_az1 += az1; e_mae_el1 += el1; e_mae_az_fb1 += azfb1
+
             global_step += 1
 
             if (b + 1) % 50 == 0:
@@ -402,22 +502,37 @@ def main():
         e_acc0 = e_correct0 / e_total0 if e_total0 else 0
         e_acc1 = e_correct1 / e_total1 if e_total1 else 0
         e_avg_loss = e_loss / batches_per_epoch
-        e_avg_mae_az = e_mae_az / e_total if e_total else 0
-        e_avg_mae_el = e_mae_el / e_total if e_total else 0
-        e_avg_mae_az_fb = e_mae_az_fb / e_total if e_total else 0
+        e_avg_mae_az    = e_mae_az    / e_total  if e_total  else 0
+        e_avg_mae_el    = e_mae_el    / e_total  if e_total  else 0
+        e_avg_mae_az_fb = e_mae_az_fb / e_total  if e_total  else 0
+        e_avg_mae_az0    = e_mae_az0    / e_total0 if e_total0 else float('nan')
+        e_avg_mae_el0    = e_mae_el0    / e_total0 if e_total0 else float('nan')
+        e_avg_mae_az_fb0 = e_mae_az_fb0 / e_total0 if e_total0 else float('nan')
+        e_avg_mae_az1    = e_mae_az1    / e_total1 if e_total1 else float('nan')
+        e_avg_mae_el1    = e_mae_el1    / e_total1 if e_total1 else float('nan')
+        e_avg_mae_az_fb1 = e_mae_az_fb1 / e_total1 if e_total1 else float('nan')
 
-        print(f"\n→ END EPOCH {epoch+1}/{args.epochs}"
-              f"  AvgLoss: {e_avg_loss:.4f}"
-              f"  Acc: {e_acc:.4f}"
-              f"  [0-Click: {e_acc0:.4f}  1-Click: {e_acc1:.4f}]"
-              f"  MAE Degrees: [Az: {e_avg_mae_az:.1f}°  Az(FB): {e_avg_mae_az_fb:.1f}°  El: {e_avg_mae_el:.1f}°]")
+        epoch_str = f'Epoch {epoch+1:2d}/{args.epochs}'
+        print()
+        print_epoch_table('TRAIN', epoch_str, [
+            dict(name='all',   loss=e_avg_loss, acc=e_acc,  n_ok=e_correct,  n=e_total,
+                 mae_az=e_avg_mae_az, mae_azfb=e_avg_mae_az_fb, mae_el=e_avg_mae_el),
+            dict(name='0-clk', loss=None,       acc=e_acc0, n_ok=e_correct0, n=e_total0,
+                 mae_az=e_avg_mae_az0, mae_azfb=e_avg_mae_az_fb0, mae_el=e_avg_mae_el0),
+            dict(name='1-clk', loss=None,       acc=e_acc1, n_ok=e_correct1, n=e_total1,
+                 mae_az=e_avg_mae_az1, mae_azfb=e_avg_mae_az_fb1, mae_el=e_avg_mae_el1),
+        ])
 
         # Write train summaries
         summ = sess.run(summary_op, feed_dict={
             loss_ph: e_avg_loss, acc_ph: e_acc,
             acc0_ph: e_acc0, acc1_ph: e_acc1,
             mae_az_ph: e_avg_mae_az, mae_el_ph: e_avg_mae_el,
-            mae_az_fb_ph: e_avg_mae_az_fb})
+            mae_az_fb_ph: e_avg_mae_az_fb,
+            mae_az_0ck_ph: e_avg_mae_az0, mae_el_0ck_ph: e_avg_mae_el0,
+            mae_az_fb_0ck_ph: e_avg_mae_az_fb0,
+            mae_az_1ck_ph: e_avg_mae_az1, mae_el_1ck_ph: e_avg_mae_el1,
+            mae_az_fb_1ck_ph: e_avg_mae_az_fb1})
         train_writer.add_summary(summ, epoch + 1)
 
         # ── Validation pass ───────────────────────────────
@@ -426,6 +541,8 @@ def main():
         v_correct = v_total = 0
         v_correct0 = v_total0 = v_correct1 = v_total1 = 0
         v_mae_az = v_mae_el = v_mae_az_fb = 0.0
+        v_mae_az0 = v_mae_el0 = v_mae_az_fb0 = 0.0
+        v_mae_az1 = v_mae_el1 = v_mae_az_fb1 = 0.0
 
         for _ in range(val_batches):
             try:
@@ -445,37 +562,58 @@ def main():
             v_mae_az  += m_az
             v_mae_el  += m_el
             v_mae_az_fb += m_az_fb
-            
+
             m0, m1 = (bc == 0), (bc == 1)
             v_correct0 += correct[m0].sum();  v_total0 += m0.sum()
             v_correct1 += correct[m1].sum();  v_total1 += m1.sum()
+
+            if m0.any():
+                az0, el0, azfb0 = calc_mae(preds_val[m0], by[m0])
+                v_mae_az0 += az0; v_mae_el0 += el0; v_mae_az_fb0 += azfb0
+            if m1.any():
+                az1, el1, azfb1 = calc_mae(preds_val[m1], by[m1])
+                v_mae_az1 += az1; v_mae_el1 += el1; v_mae_az_fb1 += azfb1
 
         v_acc  = v_correct  / v_total  if v_total  else 0
         v_acc0 = v_correct0 / v_total0 if v_total0 else 0
         v_acc1 = v_correct1 / v_total1 if v_total1 else 0
         v_avg_loss = v_loss / val_batches if val_batches else 0
-        v_avg_mae_az = v_mae_az / v_total if v_total else 0
-        v_avg_mae_el = v_mae_el / v_total if v_total else 0
-        v_avg_mae_az_fb = v_mae_az_fb / v_total if v_total else 0
+        v_avg_mae_az    = v_mae_az    / v_total  if v_total  else 0
+        v_avg_mae_el    = v_mae_el    / v_total  if v_total  else 0
+        v_avg_mae_az_fb = v_mae_az_fb / v_total  if v_total  else 0
+        v_avg_mae_az0    = v_mae_az0    / v_total0 if v_total0 else float('nan')
+        v_avg_mae_el0    = v_mae_el0    / v_total0 if v_total0 else float('nan')
+        v_avg_mae_az_fb0 = v_mae_az_fb0 / v_total0 if v_total0 else float('nan')
+        v_avg_mae_az1    = v_mae_az1    / v_total1 if v_total1 else float('nan')
+        v_avg_mae_el1    = v_mae_el1    / v_total1 if v_total1 else float('nan')
+        v_avg_mae_az_fb1 = v_mae_az_fb1 / v_total1 if v_total1 else float('nan')
 
-        print(f"  VAL  Epoch {epoch+1}/{args.epochs}"
-              f"  AvgLoss: {v_avg_loss:.4f}"
-              f"  Acc: {v_acc:.4f}"
-              f"  [0-Click: {v_acc0:.4f}  1-Click: {v_acc1:.4f}]"
-              f"  MAE Degrees: [Az: {v_avg_mae_az:.1f}°  Az(FB): {v_avg_mae_az_fb:.1f}°  El: {v_avg_mae_el:.1f}°]")
+        print_epoch_table('VAL  ', epoch_str, [
+            dict(name='all',   loss=v_avg_loss, acc=v_acc,  n_ok=v_correct,  n=v_total,
+                 mae_az=v_avg_mae_az, mae_azfb=v_avg_mae_az_fb, mae_el=v_avg_mae_el),
+            dict(name='0-clk', loss=None,       acc=v_acc0, n_ok=v_correct0, n=v_total0,
+                 mae_az=v_avg_mae_az0, mae_azfb=v_avg_mae_az_fb0, mae_el=v_avg_mae_el0),
+            dict(name='1-clk', loss=None,       acc=v_acc1, n_ok=v_correct1, n=v_total1,
+                 mae_az=v_avg_mae_az1, mae_azfb=v_avg_mae_az_fb1, mae_el=v_avg_mae_el1),
+        ])
 
         # Write val summaries
         summ = sess.run(summary_op, feed_dict={
             loss_ph: v_avg_loss, acc_ph: v_acc,
             acc0_ph: v_acc0, acc1_ph: v_acc1,
             mae_az_ph: v_avg_mae_az, mae_el_ph: v_avg_mae_el,
-            mae_az_fb_ph: v_avg_mae_az_fb})
+            mae_az_fb_ph: v_avg_mae_az_fb,
+            mae_az_0ck_ph: v_avg_mae_az0, mae_el_0ck_ph: v_avg_mae_el0,
+            mae_az_fb_0ck_ph: v_avg_mae_az_fb0,
+            mae_az_1ck_ph: v_avg_mae_az1, mae_el_1ck_ph: v_avg_mae_el1,
+            mae_az_fb_1ck_ph: v_avg_mae_az_fb1})
         val_writer.add_summary(summ, epoch + 1)
 
         # ── Forgetting eval on original data ─────────────
         if use_orig_eval:
             sess.run(orig_iter.initializer)
             o_correct = o_total = 0
+            o_mae_az = o_mae_el = o_mae_az_fb = 0.0
             for _ in range(orig_batches):
                 try:
                     bx, by, _ = sess.run(orig_next)
@@ -484,10 +622,21 @@ def main():
                 preds_val = sess.run(preds_op, feed_dict={input_ph: bx, labels_ph: by, is_training: False})
                 o_correct += (preds_val == by).sum()
                 o_total   += len(by)
+                m_az, m_el, m_az_fb = calc_mae(preds_val, by)
+                o_mae_az += m_az; o_mae_el += m_el; o_mae_az_fb += m_az_fb
             o_acc = o_correct / o_total if o_total else 0.0
-            print(f"  ORIG Epoch {epoch+1}/{args.epochs}"
-                  f"  acc_original: {o_acc:.4f}  ({o_correct}/{o_total})")
-            summ = sess.run(orig_summary_op, feed_dict={orig_acc_ph: o_acc})
+            o_avg_mae_az    = o_mae_az    / o_total if o_total else float('nan')
+            o_avg_mae_el    = o_mae_el    / o_total if o_total else float('nan')
+            o_avg_mae_az_fb = o_mae_az_fb / o_total if o_total else float('nan')
+            print_epoch_table('ORIG ', epoch_str, [
+                dict(name='all', loss=None, acc=o_acc, n_ok=o_correct, n=o_total,
+                     mae_az=o_avg_mae_az, mae_azfb=o_avg_mae_az_fb, mae_el=o_avg_mae_el),
+            ])
+            summ = sess.run(orig_summary_op, feed_dict={
+                orig_acc_ph: o_acc,
+                orig_mae_az_ph: o_avg_mae_az,
+                orig_mae_el_ph: o_avg_mae_el,
+                orig_mae_az_fb_ph: o_avg_mae_az_fb})
             orig_writer.add_summary(summ, epoch + 1)
             orig_writer.flush()
 
