@@ -14,13 +14,12 @@ trap "echo 'Stopping...'; kill $TB_PID; exit" INT TERM
 python finetune_custom.py \
   --tfrecords_dir ./echo_finetune_tfrecords/ \
   --model_dir models/net1 \
-  --output_dir "${EXP_DIR}/checkpoints" \
-  --log_dir "${EXP_DIR}/logs" \
-  --epochs 30 \
+  --output_dir experiments/exp02_frozen_lr1e-5/checkpoints \
+  --log_dir experiments/exp02_frozen_lr1e-5/logs \
+  --epochs 20 \
   --batch_size 16 \
-  --lr 1e-5 \
-  --freeze_conv \
-  --save_best_val
+  --lr 5e-5
+
 
 kill $TB_PID
 
