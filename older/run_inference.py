@@ -19,7 +19,7 @@ import tensorflow as tf
 # Add current directory to path for local imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from tf_record_CNN_spherical_gradcheckpoint_valid_pad import tf_record_CNN_spherical
+from older.tf_record_CNN_spherical_gradcheckpoint_valid_pad import tf_record_CNN_spherical
 
 
 def main():

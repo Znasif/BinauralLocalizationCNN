@@ -3,9 +3,9 @@
 
 # Default parameters (can be overridden but provides a sane default)
 MODEL_DIR="models/net1"
-CHECKPOINT="experiments/exp02_alllayers_lr5e-5_frozenbn/checkpoints/model.ckpt-6"
+CHECKPOINT="experiments/exp02_alllayers_lr5e-5_frozenbn/checkpoints/best_val.ckpt"
 TFRECORDS_DIR="echo_finetune_tfrecords"
-OUT_PLOT="./aggregate_plots/echo_finetune_aggregate_eval.png"
+OUT_PLOT="./aggregate_plots/echo_finetune_aggregate_eval1.png"
 
 # Display configuration
 SHOW_RAW_OUTPUT=false

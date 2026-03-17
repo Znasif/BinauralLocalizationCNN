@@ -15,9 +15,9 @@ python finetune_custom.py \
   --model_dir models/net1 \
   --output_dir "${EXP_DIR}/checkpoints" \
   --log_dir "${EXP_DIR}/logs" \
-  --epochs 10 \
+  --epochs 20 \
   --batch_size 16 \
-  --lr 1e-5 \
+  --lr 5e-5 \
   --freeze_bn_stats \
   --save_best_val
 

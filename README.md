@@ -53,7 +53,7 @@ python create_original_eval_shard.py --data_dir data --output data/data_original
 
 ## Running an experiment (Docker)
 ```bash
-docker run -it --gpus all -v /mnt/d/Projects/BinauralLocalizationCNN:/app nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash
+docker run -it --gpus all -p 6006:6006 -v /mnt/d/Projects/BinauralLocalizationCNN:/app nvcr.io/nvidia/tensorflow:20.12-tf1-py3 bash
 cd ../app
 pip install --upgrade pip && pip install "numpy<1.20" "matplotlib<3.6" scipy seaborn
 bash experiments/expNN_name/run.sh

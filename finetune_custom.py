@@ -283,7 +283,7 @@ def main():
         tf.int64, [args.batch_size], name='labels')
 
     is_training = tf.compat.v1.placeholder(tf.bool, shape=(), name='is_training')
-    bn_training = False if args.freeze_bn_stats else is_training
+    bn_training = is_training #False if args.freeze_bn_stats else is_training
 
     nonlin = tf.pow(input_ph, 0.3)
     net    = NetBuilder()

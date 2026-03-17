@@ -1,9 +1,9 @@
-from tf_record_CNN_spherical_gradcheckpoint_valid_pad import tf_record_CNN_spherical
+from older.tf_record_CNN_spherical_gradcheckpoint_valid_pad import tf_record_CNN_spherical
 import tensorflow as tf
 import os
 import glob
 import numpy as np
-from layer_generator import generate
+from older.layer_generator import generate
 import json
 import sys
 import pdb

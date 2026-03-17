@@ -12,11 +12,11 @@ import time
 import json
 import pdb
 from NetBuilder_valid_pad import NetBuilder
-from layer_generator import generate
-from tfrecords_iterator import build_tfrecords_iterator
+from older.layer_generator import generate
+from older.tfrecords_iterator import build_tfrecords_iterator
 from is_multi_source import is_multisource
 from google.protobuf.json_format import MessageToJson
-from parse_nested_dictionary import parse_nested_dictionary
+from older.parse_nested_dictionary import parse_nested_dictionary
 import collections
 import scipy.signal as signallib
 from pycochleagram import erbfilter as erb
@@ -24,7 +24,7 @@ from pycochleagram import subband as sb
 from scipy.io.wavfile import write
 
 
-import memory_saving_gradients
+import older.memory_saving_gradients
 from tensorflow.python.ops import gradients
 #import mem_util
 
