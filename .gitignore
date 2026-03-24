@@ -13,3 +13,5 @@ BinauralDataGen.txt
 # Experiment outputs (binary) — tracked via run.sh + notes.md instead
 experiments/*/checkpoints/
 experiments/*/logs/
+*.meta
+*.index
