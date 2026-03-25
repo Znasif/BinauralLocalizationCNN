@@ -944,3 +944,367 @@ def generate_tuning_report(output_dir, title=None):
         f.write(html)
     print(f'Report written → {out_path}')
     return out_path
+
+
+# ─────────────────────────────────────────────────────────
+#  Input-level attribution visualizations (Simonyan [57],
+#  Zeiler & Fergus [55], Selvaraju Grad-CAM)
+# ─────────────────────────────────────────────────────────
+
+def plot_saliency_overlay(cochleagram, saliency_map, output_path,
+                          predicted_class=None, ground_truth=None,
+                          confidence=None, method_name='Vanilla Saliency'):
+    """Overlay a saliency map on the input cochleagram.
+
+    Produces a 2×2 figure:
+      Top-left:   left-ear cochleagram with saliency overlay
+      Top-right:  right-ear cochleagram with saliency overlay
+      Bottom-left:  saliency magnitude by frequency band (marginal)
+      Bottom-right: saliency magnitude by time region (marginal)
+
+    Args:
+        cochleagram:     np.ndarray (39, 8000, 2)
+        saliency_map:    np.ndarray (39, 8000, 2) — same shape as input
+        output_path:     file path to save PNG
+        predicted_class: optional int (0–503)
+        ground_truth:    optional dict with 'azimuth', 'elevation'
+        confidence:      optional float
+        method_name:     str for the title
+    """
+    from scipy.ndimage import gaussian_filter
+
+    fig, axes = plt.subplots(2, 2, figsize=(18, 8))
+
+    title = method_name
+    if predicted_class is not None:
+        pred_az, pred_el = decode_class_index(predicted_class)
+        title += f'  |  Pred: az={pred_az}° el={pred_el}°'
+    if ground_truth and 'azimuth' in ground_truth:
+        title += f'  |  GT: az={ground_truth["azimuth"]}° el={ground_truth["elevation"]}°'
+    if confidence is not None:
+        title += f'  |  Conf: {confidence:.4f}'
+    fig.suptitle(title, fontsize=12, fontweight='bold')
+
+    ear_names = ['Left Ear', 'Right Ear']
+    sal_abs = np.abs(saliency_map)
+
+    for ear_idx in range(2):
+        ax = axes[0, ear_idx]
+
+        # Cochleagram as base image (full opacity, grayscale)
+        coch_display = np.log1p(np.maximum(cochleagram[:, :, ear_idx], 0))
+        coch_norm = coch_display / (coch_display.max() + 1e-12)
+
+        # Saliency: Gaussian smooth to reduce pixel noise, then
+        # clip at 99th percentile to avoid outlier-dominated normalization
+        sal = sal_abs[:, :, ear_idx].copy()
+        sal = gaussian_filter(sal, sigma=(1.0, 20.0))  # smooth: ~1 freq bin, ~20 time steps
+        p99 = np.percentile(sal, 99)
+        if p99 > 0:
+            sal = np.clip(sal / p99, 0, 1)
+        else:
+            sal = sal / (sal.max() + 1e-12)
+
+        # Composite: grayscale cochleagram blended with hot saliency
+        # where saliency is strong, show the hot colormap; otherwise show cochleagram
+        cmap_hot = plt.cm.inferno
+        sal_rgb = cmap_hot(sal)[:, :, :3]  # (39, 8000, 3)
+        coch_rgb = plt.cm.gray(coch_norm)[:, :, :3]
+        blend_weight = sal[:, :, np.newaxis] ** 0.7  # nonlinear blend for contrast
+        composited = coch_rgb * (1 - blend_weight) + sal_rgb * blend_weight
+
+        ax.imshow(composited, aspect='auto', origin='lower', interpolation='nearest')
+        ax.set_title(f'{ear_names[ear_idx]} — Saliency Overlay', fontsize=10)
+        ax.set_xlabel('Time step', fontsize=8)
+        ax.set_ylabel('Frequency bin', fontsize=8)
+        ax.tick_params(labelsize=6)
+
+    # Frequency marginal (sum over time, then normalize per-ear)
+    ax = axes[1, 0]
+    freq_marginal = sal_abs.sum(axis=1)  # (39, 2)
+    # Normalize so bars are visible relative to each other
+    fm_max = freq_marginal.max() + 1e-12
+    freq_marginal_norm = freq_marginal / fm_max
+    freq_bins = np.arange(39)
+    ax.barh(freq_bins, freq_marginal_norm[:, 0], height=0.8, alpha=0.7,
+            color='steelblue', label='Left ear')
+    ax.barh(freq_bins, freq_marginal_norm[:, 1], height=0.5, alpha=0.7,
+            color='coral', label='Right ear')
+    ax.set_ylabel('Frequency bin', fontsize=9)
+    ax.set_xlabel('Relative saliency (normalized)', fontsize=9)
+    ax.set_title('Saliency by frequency band', fontsize=10)
+    ax.legend(fontsize=7)
+    ax.grid(axis='x', alpha=0.3)
+    ax.set_xlim(0, 1.05)
+
+    # Time marginal (sum over frequency, then normalize)
+    ax = axes[1, 1]
+    time_marginal = sal_abs.sum(axis=0)  # (8000, 2)
+    # Downsample for readability
+    n_bins = 100
+    bin_size = time_marginal.shape[0] // n_bins
+    time_binned = np.array([time_marginal[i*bin_size:(i+1)*bin_size].sum(axis=0)
+                            for i in range(n_bins)])
+    # Normalize
+    tb_max = time_binned.max() + 1e-12
+    time_binned_norm = time_binned / tb_max
+    x = np.arange(n_bins) * bin_size
+    ax.fill_between(x, time_binned_norm[:, 0], alpha=0.5, color='steelblue', label='Left ear')
+    ax.fill_between(x, time_binned_norm[:, 1], alpha=0.5, color='coral', label='Right ear')
+    ax.set_xlabel('Time step', fontsize=9)
+    ax.set_ylabel('Relative saliency (normalized)', fontsize=9)
+    ax.set_title('Saliency by time region', fontsize=10)
+    ax.legend(fontsize=7)
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(0, 1.05)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=130, bbox_inches='tight')
+    plt.close()
+    print(f'  Saved saliency overlay: {output_path}')
+
+
+def plot_gradcam_ladder(cochleagram, gradcam_maps, layer_names, output_path,
+                        predicted_class=None, ground_truth=None):
+    """Grad-CAM attention ladder: one row per conv layer, overlaid on cochleagram.
+
+    Shows how the network's spatial attention evolves from early
+    (fine-grained temporal/spectral) to deep (coarse pattern) layers.
+
+    Args:
+        cochleagram:     np.ndarray (39, 8000, 2) — left ear used for background
+        gradcam_maps:    list of np.ndarray — one per layer, each upsampled
+                         to (39, 8000) via bilinear interpolation
+        layer_names:     list of str — friendly names for each layer
+        output_path:     file path to save PNG
+        predicted_class: optional int (0–503)
+        ground_truth:    optional dict with 'azimuth', 'elevation'
+    """
+    n_layers = len(gradcam_maps)
+    fig, axes = plt.subplots(n_layers + 1, 1,
+                             figsize=(16, 2.2 * (n_layers + 1) + 0.8),
+                             gridspec_kw={'hspace': 0.35})
+
+    title = 'Grad-CAM Layer Attention Ladder'
+    if predicted_class is not None:
+        pred_az, pred_el = decode_class_index(predicted_class)
+        title += f'  |  Pred: az={pred_az}° el={pred_el}°'
+    if ground_truth and 'azimuth' in ground_truth:
+        title += f'  |  GT: az={ground_truth["azimuth"]}° el={ground_truth["elevation"]}°'
+    fig.suptitle(title, fontsize=12, fontweight='bold', y=1.01)
+
+    # Top row: raw cochleagram (left ear)
+    ax = axes[0]
+    left_ear = np.log1p(np.maximum(cochleagram[:, :, 0], 0))
+    ax.imshow(left_ear, aspect='auto', cmap='inferno',
+              origin='lower', interpolation='nearest')
+    ax.set_title('Input cochleagram (left ear)', fontsize=9, fontweight='bold')
+    ax.set_ylabel('Freq', fontsize=8)
+    ax.tick_params(labelsize=5)
+
+    # One row per layer
+    for i, (gcam, lname) in enumerate(zip(gradcam_maps, layer_names)):
+        ax = axes[i + 1]
+        ax.imshow(left_ear, aspect='auto', cmap='gray',
+                  origin='lower', interpolation='nearest', alpha=0.4)
+
+        gcam_norm = gcam / (gcam.max() + 1e-12)
+        im = ax.imshow(gcam_norm, aspect='auto', cmap='jet', alpha=0.65,
+                       origin='lower', interpolation='nearest',
+                       vmin=0, vmax=1)
+        ax.set_title(f'{lname} — Grad-CAM', fontsize=9)
+        ax.set_ylabel('Freq', fontsize=8)
+        ax.tick_params(labelsize=5)
+        plt.colorbar(im, ax=ax, fraction=0.015, pad=0.01)
+
+    axes[-1].set_xlabel('Time step', fontsize=9)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.savefig(output_path, dpi=130, bbox_inches='tight')
+    plt.close()
+    print(f'  Saved Grad-CAM ladder: {output_path}')
+
+
+def plot_fc_output_attribution(fc_activations, output_weights, predicted_class,
+                               output_path, ground_truth=None, top_n=20):
+    """Decompose the output prediction into per-FC-unit contributions.
+
+    Left panel:  top-N FC units by contribution magnitude to the predicted class
+    Right panel: heatmap of those units' contributions across nearby output classes
+
+    Args:
+        fc_activations: np.ndarray (512,) — ReLU'd FC layer output
+        output_weights: np.ndarray (512, 504) — wc_out_0
+        predicted_class: int (0–503)
+        output_path:     file path to save PNG
+        ground_truth:    optional dict with 'azimuth', 'elevation'
+        top_n:           number of top contributing units to show
+    """
+    # Per-unit contribution to predicted class
+    contributions = fc_activations * output_weights[:, predicted_class]
+
+    # Sort by absolute contribution
+    order = np.argsort(np.abs(contributions))[::-1]
+    top_units = order[:top_n]
+    top_contribs = contributions[top_units]
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6),
+                             gridspec_kw={'width_ratios': [1, 1.5]})
+
+    pred_az, pred_el = decode_class_index(predicted_class)
+    title = f'FC → Output Attribution  |  Pred: az={pred_az}° el={pred_el}°'
+    if ground_truth and 'azimuth' in ground_truth:
+        title += f'  |  GT: az={ground_truth["azimuth"]}° el={ground_truth["elevation"]}°'
+    fig.suptitle(title, fontsize=12, fontweight='bold')
+
+    # Left: bar chart of top-N contributions
+    ax = axes[0]
+    colors = ['#2ecc71' if c > 0 else '#e74c3c' for c in top_contribs]
+    y_pos = np.arange(top_n)
+    ax.barh(y_pos, top_contribs, color=colors, edgecolor='none', height=0.75)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels([f'U{u}' for u in top_units], fontsize=7)
+    ax.invert_yaxis()
+    ax.set_xlabel('Contribution to predicted class logit', fontsize=9)
+    ax.set_title(f'Top-{top_n} FC units', fontsize=10)
+    ax.grid(axis='x', alpha=0.3)
+    ax.axvline(0, color='black', linewidth=0.8, alpha=0.5)
+
+    # Annotate activation values
+    for i, (u, c) in enumerate(zip(top_units, top_contribs)):
+        act_val = fc_activations[u]
+        ax.text(c + (0.01 * np.sign(c) * np.abs(top_contribs).max()),
+                i, f'act={act_val:.2f}', va='center', fontsize=6, color='#666')
+
+    # Right: heatmap of top units × nearby classes
+    ax = axes[1]
+    # Show ±5 azimuth bins around predicted class
+    pred_az_bin = predicted_class % 72
+    pred_el_bin = predicted_class // 72
+    nearby_classes = []
+    nearby_labels = []
+    for el in range(max(0, pred_el_bin - 1), min(7, pred_el_bin + 2)):
+        for az_offset in range(-5, 6):
+            az = (pred_az_bin + az_offset) % 72
+            cls = el * 72 + az
+            nearby_classes.append(cls)
+            nearby_labels.append(f'{az*5}°/{el*10}°')
+
+    # Contribution matrix: top_units × nearby_classes
+    contrib_matrix = fc_activations[top_units, np.newaxis] * \
+                     output_weights[top_units][:, nearby_classes]
+
+    im = ax.imshow(contrib_matrix, aspect='auto', cmap='RdBu_r',
+                   interpolation='nearest',
+                   vmin=-np.abs(contrib_matrix).max(),
+                   vmax=np.abs(contrib_matrix).max())
+    ax.set_yticks(np.arange(top_n))
+    ax.set_yticklabels([f'U{u}' for u in top_units], fontsize=6)
+
+    # Show fewer x-tick labels to avoid overlap
+    step = max(1, len(nearby_classes) // 15)
+    ax.set_xticks(np.arange(0, len(nearby_classes), step))
+    ax.set_xticklabels([nearby_labels[i] for i in range(0, len(nearby_classes), step)],
+                       fontsize=5, rotation=45, ha='right')
+    ax.set_xlabel('Nearby output classes (az/el)', fontsize=8)
+    ax.set_title('Unit contributions across nearby classes', fontsize=10)
+    plt.colorbar(im, ax=ax, shrink=0.7, label='Contribution')
+
+    # Mark the predicted class column
+    pred_col = nearby_classes.index(predicted_class) if predicted_class in nearby_classes else -1
+    if pred_col >= 0:
+        ax.axvline(pred_col, color='gold', linewidth=2, alpha=0.8, linestyle='--')
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=130, bbox_inches='tight')
+    plt.close()
+    print(f'  Saved FC attribution: {output_path}')
+
+
+def plot_aggregate_saliency(mean_saliency_by_sector, sector_names, output_path):
+    """Mean saliency maps averaged across samples grouped by azimuth sector.
+
+    Args:
+        mean_saliency_by_sector: dict {sector_name: np.ndarray (39, 8000, 2)}
+        sector_names:            list of str
+        output_path:             file path to save PNG
+    """
+    n_sectors = len(sector_names)
+    fig, axes = plt.subplots(n_sectors, 2, figsize=(16, 2.5 * n_sectors + 0.8),
+                             squeeze=False)
+    fig.suptitle('Mean Saliency by Azimuth Sector', fontsize=13, fontweight='bold')
+
+    ear_names = ['Left Ear', 'Right Ear']
+    for row, sname in enumerate(sector_names):
+        sal = mean_saliency_by_sector[sname]
+        for ear in range(2):
+            ax = axes[row, ear]
+            sal_ear = np.abs(sal[:, :, ear])
+            # Gaussian smooth + percentile normalization (same as per-sample)
+            from scipy.ndimage import gaussian_filter
+            sal_ear = gaussian_filter(sal_ear, sigma=(1.0, 20.0))
+            p99 = np.percentile(sal_ear, 99)
+            if p99 > 0:
+                sal_ear = np.clip(sal_ear / p99, 0, 1)
+            else:
+                sal_ear = sal_ear / (sal_ear.max() + 1e-12)
+            ax.imshow(sal_ear, aspect='auto', cmap='inferno',
+                      origin='lower', interpolation='nearest',
+                      vmin=0, vmax=1)
+            ax.set_title(f'{sname} — {ear_names[ear]}', fontsize=9)
+            ax.set_ylabel('Freq', fontsize=7)
+            ax.tick_params(labelsize=5)
+    axes[-1, 0].set_xlabel('Time step', fontsize=8)
+    axes[-1, 1].set_xlabel('Time step', fontsize=8)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=130, bbox_inches='tight')
+    plt.close()
+    print(f'  Saved aggregate saliency: {output_path}')
+
+
+def plot_layer_attention_profile(attention_profile, layer_names, output_path):
+    """Heatmap: per-layer fraction of Grad-CAM activation in freq/time regions.
+
+    Args:
+        attention_profile: dict with keys:
+            'freq_bands': np.ndarray (n_layers, 3) — low/mid/high freq fractions
+            'time_regions': np.ndarray (n_layers, 3) — onset/mid/sustain fractions
+        layer_names:      list of str
+        output_path:      file path to save PNG
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig.suptitle('Layer Attention Profile — Where Each Layer Looks',
+                 fontsize=12, fontweight='bold')
+
+    freq_labels = ['Low freq\n(bins 0–12)', 'Mid freq\n(bins 13–25)', 'High freq\n(bins 26–38)']
+    time_labels = ['Onset\n(0–33%)', 'Middle\n(33–66%)', 'Sustain\n(66–100%)']
+
+    for ax_idx, (data_key, region_labels, title) in enumerate([
+        ('freq_bands', freq_labels, 'Frequency band attention'),
+        ('time_regions', time_labels, 'Temporal region attention'),
+    ]):
+        ax = axes[ax_idx]
+        data = attention_profile[data_key]  # (n_layers, 3)
+        im = ax.imshow(data, aspect='auto', cmap='YlOrRd',
+                       interpolation='nearest', vmin=0, vmax=data.max())
+        ax.set_yticks(np.arange(len(layer_names)))
+        ax.set_yticklabels(layer_names, fontsize=9)
+        ax.set_xticks(np.arange(3))
+        ax.set_xticklabels(region_labels, fontsize=8)
+        ax.set_title(title, fontsize=10)
+        plt.colorbar(im, ax=ax, shrink=0.7, label='Fraction of total activation')
+        # Annotate cells
+        for i in range(len(layer_names)):
+            for j in range(3):
+                ax.text(j, i, f'{data[i, j]:.2f}', ha='center', va='center',
+                        fontsize=8, color='black' if data[i, j] < data.max() * 0.7 else 'white')
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=130, bbox_inches='tight')
+    plt.close()
+    print(f'  Saved attention profile: {output_path}')
