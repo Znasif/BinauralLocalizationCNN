@@ -1,8 +1,13 @@
 import os
+import json
+import math
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import matplotlib.gridspec
+import matplotlib.patches
 import seaborn as sns
 
 
@@ -347,3 +352,595 @@ def plot_activation_maps(layer_outputs, layer_names, output_path, max_channels=1
 
     print(f'\nActivation maps saved: {len(saved_paths)} file(s)')
     return saved_paths
+
+
+# ─────────────────────────────────────────────────────────
+#  Unit tuning maps  (class-conditional activation aggregation)
+# ─────────────────────────────────────────────────────────
+
+# Shared axis helpers
+_AZIM_TICKS       = np.arange(0, 72, 12)          # every 60 degrees
+_AZIM_TICK_LABELS = [f'{int(t*5)}°' for t in _AZIM_TICKS]
+_ELEV_TICKS       = np.arange(7)                   # all 7 bins
+_ELEV_TICK_LABELS = [f'{int(t*10)}°' for t in _ELEV_TICKS]
+
+
+def _apply_spatial_axes(ax, fontsize=6):
+    ax.set_xticks(_AZIM_TICKS)
+    ax.set_xticklabels(_AZIM_TICK_LABELS, fontsize=fontsize)
+    ax.set_yticks(_ELEV_TICKS)
+    ax.set_yticklabels(_ELEV_TICK_LABELS, fontsize=fontsize)
+    ax.set_xlabel('Azimuth', fontsize=fontsize + 1)
+    ax.set_ylabel('Elevation', fontsize=fontsize + 1)
+
+
+def plot_unit_tuning_grid(tuning_maps, layer_name, output_path,
+                          selectivity_scores=None, max_units=64,
+                          total_samples=0):
+    """Grid of dual-panel unit cards: azimuth tuning curve + 7×72 heatmap inset.
+
+    Each card (like dissect's image-patch grid) shows:
+      - Top panel: 1-D azimuth tuning curve (mean over elevation) as a bar chart
+        → readable at small sizes, immediately shows spatial selectivity
+      - Bottom panel: 7×72 heatmap inset showing elevation dependence
+
+    Args:
+        tuning_maps:        np.ndarray (N_units, 7, 72) — mean activation per class
+        layer_name:         str, used in the figure supertitle
+        output_path:        file path to save PNG
+        selectivity_scores: optional np.ndarray (N_units,) — variance across classes
+        max_units:          cap on units shown; sampled evenly when N_units > max_units
+        total_samples:      int, shown in supertitle for reference
+    """
+    N_units = tuning_maps.shape[0]
+    n_show  = min(N_units, max_units)
+    indices = np.linspace(0, N_units - 1, n_show, dtype=int)
+
+    ncols = min(n_show, 8)
+    nrows = math.ceil(n_show / ncols)
+
+    # Each card is 2 sub-rows: bar chart (top) + heatmap (bottom)
+    fig = plt.figure(figsize=(ncols * 2.5, nrows * 3.4 + 1.2))
+    shown = f'showing {n_show}/{N_units}' if n_show < N_units else f'{N_units} units'
+    samp  = f', {total_samples} samples' if total_samples else ''
+    fig.suptitle(f'Unit Tuning — {layer_name}  ({shown}{samp})',
+                 fontsize=11, fontweight='bold', y=1.01)
+
+    # Shared colour scale for heatmaps (NaN → light grey)
+    shown_maps = tuning_maps[indices]
+    vmin = float(np.nanmin(shown_maps)) if not np.all(np.isnan(shown_maps)) else 0.0
+    vmax = float(np.nanmax(shown_maps)) if not np.all(np.isnan(shown_maps)) else 1.0
+    cmap_heat = mcolors.LinearSegmentedColormap.from_list(
+        'plasma_nan', plt.cm.plasma(np.linspace(0, 1, 256)))
+    cmap_heat.set_bad('#c8c8c8')          # NaN → light grey
+
+    az_bins = np.arange(72) * 5           # 0, 5, …, 355 degrees
+
+    outer = matplotlib.gridspec.GridSpec(nrows, ncols, figure=fig,
+                                         hspace=0.55, wspace=0.35)
+
+    for i, unit_idx in enumerate(indices):
+        row, col = divmod(i, ncols)
+        inner = matplotlib.gridspec.GridSpecFromSubplotSpec(
+            2, 1, subplot_spec=outer[row, col], hspace=0.15,
+            height_ratios=[2.2, 1])
+
+        tmap      = tuning_maps[unit_idx]          # (7, 72)
+        az_curve  = np.nanmean(tmap, axis=0)       # (72,)  — mean over elevation
+        peak_az   = int(az_bins[np.nanargmax(az_curve)]) if not np.all(np.isnan(az_curve)) else -1
+
+        # ── Top: azimuth tuning bar chart ────────────────
+        ax_bar = fig.add_subplot(inner[0])
+        colors = plt.cm.plasma(
+            (az_curve - vmin) / max(vmax - vmin, 1e-9))
+        ax_bar.bar(az_bins, np.nan_to_num(az_curve), width=4,
+                   color=colors, edgecolor='none')
+        ax_bar.set_xlim(-5, 360)
+        ax_bar.set_xticks([0, 90, 180, 270, 355])
+        ax_bar.set_xticklabels(['0', '90', '180', '270', '355'], fontsize=4)
+        ax_bar.tick_params(axis='y', labelsize=4)
+        ax_bar.set_xlabel('Az (°)', fontsize=4, labelpad=1)
+        ax_bar.grid(axis='y', alpha=0.25, linewidth=0.5)
+        ax_bar.spines['top'].set_visible(False)
+        ax_bar.spines['right'].set_visible(False)
+
+        title = f'U{unit_idx}'
+        if selectivity_scores is not None:
+            title += f'  sel={selectivity_scores[unit_idx]:.3f}'
+        if peak_az >= 0:
+            title += f'  peak={peak_az}°'
+        ax_bar.set_title(title, fontsize=6, pad=2)
+
+        # ── Bottom: 7×72 heatmap inset ───────────────────
+        ax_map = fig.add_subplot(inner[1])
+        ax_map.imshow(tmap, aspect='auto', cmap=cmap_heat,
+                      vmin=vmin, vmax=vmax,
+                      origin='lower', interpolation='nearest')
+        ax_map.set_xticks([0, 18, 36, 54, 71])
+        ax_map.set_xticklabels(['0°', '90°', '180°', '270°', '355°'], fontsize=3.5)
+        ax_map.set_yticks([0, 3, 6])
+        ax_map.set_yticklabels(['0°', '30°', '60°'], fontsize=3.5)
+        ax_map.tick_params(length=2, pad=1)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.savefig(output_path, dpi=130, bbox_inches='tight')
+    plt.close()
+    print(f'  Saved tuning grid: {output_path}')
+
+
+def plot_layer_attribution_map(tuning_maps_dict, output_path, total_samples=0):
+    """Primary cross-layer summary: for each spatial position, which layer responds most.
+
+    Produces a 3-panel figure:
+      Left:   7×72 grid coloured by the layer index whose units have the highest
+              max activation for that position  ("winner-takes-all by layer")
+      Centre: 7×72 grid showing the actual peak activation value at each position
+              (max over all units and all layers)
+      Right:  Per-layer stacked bar chart of unit spatial-preference distribution
+              (how many units in each layer prefer each azimuth sector — the
+              direct analogue of dissect's object/part/color concept histogram)
+
+    Args:
+        tuning_maps_dict: {layer_name: np.ndarray (N_units, 7, 72)}
+        output_path:      file path to save PNG
+        total_samples:    shown in title
+    """
+    layer_names = list(tuning_maps_dict.keys())
+    n_layers    = len(layer_names)
+
+    # ── Per-layer max over units: (n_layers, 7, 72) ──────
+    layer_max = np.stack(
+        [np.nanmax(tuning_maps_dict[l], axis=0) for l in layer_names], axis=0)
+    # nan-safe argmax: winner layer per spatial position
+    valid     = ~np.all(np.isnan(layer_max), axis=0)        # (7, 72) bool
+    winner    = np.full((7, 72), -1, dtype=int)
+    if valid.any():
+        winner[valid] = np.nanargmax(layer_max[:, valid], axis=0)
+    peak_act  = np.nanmax(layer_max, axis=0)                # (7, 72)
+
+    # ── Colour map: one colour per layer ─────────────────
+    layer_cmap  = plt.cm.get_cmap('tab10', n_layers)
+    layer_colors = [layer_cmap(i) for i in range(n_layers)]
+
+    # ── Spatial-preference distribution per layer ────────
+    # Sectors: Front(0±45°→315-45), Right(45-135), Back(135-225), Left(225-315)
+    sector_edges = [(-45, 45), (45, 135), (135, 225), (225, 315)]
+    sector_names = ['Front\n(±45°)', 'Right\n(45-135°)',
+                    'Back\n(135-225°)', 'Left\n(225-315°)']
+    sector_colors = ['#4e9af1', '#f4a261', '#2ecc71', '#e74c3c']
+
+    def _az_to_sector(az_deg):
+        az = az_deg % 360
+        if az > 315 or az <= 45:  return 0   # front
+        if az <= 135:             return 1   # right
+        if az <= 225:             return 2   # back
+        return 3                             # left
+
+    # For each layer: count units with clear peak in each sector
+    sector_counts = np.zeros((n_layers, 4), dtype=int)
+    for li, lname in enumerate(layer_names):
+        tmap = tuning_maps_dict[lname]       # (N_units, 7, 72)
+        az_mean = np.nanmean(tmap, axis=1)   # (N_units, 72) — mean over elevation
+        for unit_az in az_mean:
+            if np.all(np.isnan(unit_az)):
+                continue
+            peak_bin = int(np.nanargmax(unit_az))
+            sector_counts[li, _az_to_sector(peak_bin * 5)] += 1
+
+    # ── Figure ───────────────────────────────────────────
+    samp = f'  ({total_samples} samples)' if total_samples else ''
+    fig  = plt.figure(figsize=(16, 5.5))
+    fig.suptitle(f'Cross-layer spatial attribution{samp}',
+                 fontsize=13, fontweight='bold')
+    gs   = matplotlib.gridspec.GridSpec(1, 3, figure=fig,
+                                        width_ratios=[1.4, 1.4, 2.2],
+                                        wspace=0.38)
+
+    # ── Panel 1: winner-layer map ─────────────────────────
+    ax1 = fig.add_subplot(gs[0])
+    # Build RGBA image
+    rgba = np.ones((7, 72, 4))
+    for row in range(7):
+        for col in range(72):
+            li = winner[row, col]
+            rgba[row, col] = layer_colors[li] if li >= 0 else (0.82, 0.82, 0.82, 1)
+    ax1.imshow(rgba, aspect='auto', origin='lower', interpolation='nearest')
+    _apply_spatial_axes(ax1, fontsize=7)
+    ax1.set_title('Dominant layer per position\n(winner-takes-all)', fontsize=9)
+    # Legend
+    handles = [matplotlib.patches.Patch(color=layer_colors[i], label=layer_names[i])
+               for i in range(n_layers)]
+    handles.append(matplotlib.patches.Patch(color='#d1d1d1', label='(no data)'))
+    ax1.legend(handles=handles, fontsize=6, loc='upper right',
+               framealpha=0.7, bbox_to_anchor=(1.0, -0.14), ncol=2)
+
+    # ── Panel 2: peak activation magnitude map ───────────
+    ax2 = fig.add_subplot(gs[1])
+    cmap2 = mcolors.LinearSegmentedColormap.from_list(
+        'plasma_nan', plt.cm.plasma(np.linspace(0, 1, 256)))
+    cmap2.set_bad('#d1d1d1')
+    im2 = ax2.imshow(peak_act, aspect='auto', cmap=cmap2,
+                     origin='lower', interpolation='nearest')
+    _apply_spatial_axes(ax2, fontsize=7)
+    ax2.set_title('Peak activation magnitude\n(max over all units & layers)', fontsize=9)
+    plt.colorbar(im2, ax=ax2, shrink=0.7, label='Max mean activation')
+
+    # ── Panel 3: spatial-preference distribution per layer ─
+    ax3 = fig.add_subplot(gs[2])
+    bar_h   = 0.65
+    y_pos   = np.arange(n_layers)
+    lefts   = np.zeros(n_layers)
+    total_u = sector_counts.sum(axis=1).clip(min=1)
+    for si, (sname, scol) in enumerate(zip(sector_names, sector_colors)):
+        fracs = sector_counts[:, si] / total_u
+        bars  = ax3.barh(y_pos, fracs, left=lefts, height=bar_h,
+                         color=scol, label=sname, edgecolor='none')
+        # Annotate non-trivial fractions
+        for bar, frac in zip(bars, fracs):
+            if frac > 0.08:
+                ax3.text(bar.get_x() + bar.get_width() / 2,
+                         bar.get_y() + bar.get_height() / 2,
+                         f'{frac:.0%}', ha='center', va='center',
+                         fontsize=7, color='white', fontweight='bold')
+        lefts += fracs
+
+    ax3.set_yticks(y_pos)
+    ax3.set_yticklabels(layer_names, fontsize=9)
+    ax3.set_xlim(0, 1)
+    ax3.set_xlabel('Fraction of units', fontsize=9)
+    ax3.set_title('Unit spatial-preference distribution per layer\n'
+                  '(analogue of dissect concept histogram)', fontsize=9)
+    ax3.legend(loc='lower right', fontsize=7, framealpha=0.7,
+               ncol=2, bbox_to_anchor=(1.0, -0.22))
+    ax3.grid(axis='x', alpha=0.25)
+    ax3.spines['top'].set_visible(False)
+    ax3.spines['right'].set_visible(False)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.savefig(output_path, dpi=130, bbox_inches='tight')
+    plt.close()
+    print(f'  Saved attribution map: {output_path}')
+
+
+def plot_selectivity_ranking(selectivity_scores, layer_name, output_path,
+                             top_k=20):
+    """Horizontal bar chart of units ranked by selectivity (variance across classes).
+
+    Args:
+        selectivity_scores: np.ndarray (N_units,)
+        layer_name:         str
+        output_path:        file path to save PNG
+        top_k:              top-k bars highlighted in darkorange
+    """
+    N = len(selectivity_scores)
+    order  = np.argsort(selectivity_scores)[::-1]   # descending
+    scores = selectivity_scores[order]
+    colors = ['darkorange' if i < top_k else 'steelblue' for i in range(N)]
+
+    fig_h = max(4, N * 0.18)
+    fig, ax = plt.subplots(figsize=(9, fig_h))
+    bars = ax.barh(np.arange(N), scores, color=colors, edgecolor='none', height=0.8)
+    ax.set_yticks(np.arange(N))
+    ax.set_yticklabels([f'U{i}' for i in order], fontsize=max(4, 8 - N // 40))
+    ax.invert_yaxis()
+    ax.set_xlabel('Variance of mean activation across 504 classes', fontsize=10)
+    ax.set_title(f'Unit Selectivity Ranking — {layer_name}\n'
+                 f'Top {top_k} highlighted', fontsize=11, fontweight='bold')
+    ax.grid(axis='x', alpha=0.3)
+
+    # Annotate top-k values
+    for i in range(min(top_k, N)):
+        ax.text(scores[i] + scores[0] * 0.01, i, f'{scores[i]:.4f}',
+                va='center', fontsize=max(5, 7 - N // 60))
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=120, bbox_inches='tight')
+    plt.close()
+    print(f'  Saved selectivity ranking: {output_path}')
+
+
+def plot_topk_mosaic(cochleagrams, activations, unit_idx, layer_name,
+                     output_path, activation_maps=None):
+    """k-panel figure: cochleagram thumbnails for the top-k activating samples.
+
+    Each panel shows the left-ear cochleagram (log-scaled for display).
+    If activation_maps is provided, overlays the unit's spatial activation as
+    a semi-transparent heatmap (only meaningful for conv layers).
+
+    Args:
+        cochleagrams:    list of np.ndarray (39, 8000, 2), length k
+        activations:     list of float — max-pooled activation for each sample
+        unit_idx:        int
+        layer_name:      str
+        output_path:     file path to save PNG
+        activation_maps: optional list of np.ndarray (H, W) — per-sample
+                         spatial activation maps before max-pooling;
+                         None for FC/flatten layers
+    """
+    k     = len(cochleagrams)
+    ncols = min(k, 4)
+    nrows = math.ceil(k / ncols)
+
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(ncols * 3.5, nrows * 2.8 + 0.8),
+                             squeeze=False)
+    fig.suptitle(f'Top-{k} activating samples — Unit {unit_idx} ({layer_name})',
+                 fontsize=11, fontweight='bold')
+
+    flat_axes = axes.flatten()
+    for i, (coch, act_val) in enumerate(zip(cochleagrams, activations)):
+        ax = flat_axes[i]
+        # Left ear, log-compressed for display
+        left_ear = coch[:, :, 0]
+        display  = np.log1p(np.maximum(left_ear, 0))
+        ax.imshow(display, aspect='auto', cmap='inferno',
+                  origin='lower', interpolation='nearest')
+
+        if activation_maps is not None and activation_maps[i] is not None:
+            amap = activation_maps[i]
+            # Upsample spatial map to cochleagram resolution
+            from scipy.ndimage import zoom as nd_zoom
+            scale_h = left_ear.shape[0] / amap.shape[0]
+            scale_w = left_ear.shape[1] / amap.shape[1]
+            upsampled = nd_zoom(amap, (scale_h, scale_w), order=1)
+            # Normalise to [0, 1] and overlay
+            u_norm = (upsampled - upsampled.min()) / (upsampled.ptp() + 1e-9)
+            ax.imshow(u_norm, aspect='auto', cmap='hot', alpha=0.45,
+                      origin='lower', interpolation='nearest')
+
+        ax.set_title(f'Rank {i+1}  act={act_val:.3f}', fontsize=8)
+        ax.set_xlabel('Time steps', fontsize=6)
+        ax.set_ylabel('Freq bin', fontsize=6)
+        ax.tick_params(labelsize=5)
+
+    for i in range(k, len(flat_axes)):
+        flat_axes[i].set_visible(False)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=120, bbox_inches='tight')
+    plt.close()
+    print(f'  Saved top-k mosaic: {output_path}')
+
+
+# ─────────────────────────────────────────────────────────
+#  HTML report generator
+# ─────────────────────────────────────────────────────────
+
+_HTML_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; }}
+  header {{ padding: 16px 24px; background: #1a1a2e; border-bottom: 1px solid #333; }}
+  header h1 {{ margin: 0 0 4px; font-size: 1.3em; }}
+  header p  {{ margin: 0; font-size: 0.85em; color: #aaa; }}
+  #controls {{ display: flex; gap: 12px; align-items: center; padding: 10px 24px;
+               background: #16213e; flex-wrap: wrap; }}
+  #controls label {{ font-size: 0.85em; color: #ccc; }}
+  #controls select, #controls input {{ background: #222; color: #eee;
+               border: 1px solid #444; border-radius: 4px; padding: 4px 8px; }}
+  #layer-tabs {{ display: flex; gap: 6px; padding: 10px 24px 0; flex-wrap: wrap; }}
+  .tab {{ padding: 6px 14px; border-radius: 6px 6px 0 0; cursor: pointer;
+          background: #222; border: 1px solid #444; border-bottom: none;
+          font-size: 0.85em; }}
+  .tab.active {{ background: #0f3460; color: #fff; border-color: #0f3460; }}
+  #grid {{ display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 24px; }}
+  .card {{ background: #1e1e2e; border: 1px solid #333; border-radius: 8px;
+           width: 180px; cursor: pointer; transition: border-color .15s; }}
+  .card:hover {{ border-color: #7b68ee; }}
+  .card img {{ width: 100%; border-radius: 8px 8px 0 0; display: block; }}
+  .card-info {{ padding: 6px 8px; font-size: 0.78em; }}
+  .card-info .unit  {{ font-weight: bold; color: #a9d4ff; }}
+  .card-info .score {{ color: #f4a261; }}
+  .detail {{ display: none; background: #12122a; border: 1px solid #444;
+             border-radius: 8px; padding: 16px; margin: 0 24px 16px;
+             width: calc(100% - 96px); }}
+  .detail.open {{ display: flex; gap: 16px; flex-wrap: wrap; }}
+  .detail img {{ max-width: 480px; border-radius: 6px; }}
+  .detail h3  {{ margin: 0 0 10px; font-size: 1em; color: #a9d4ff; width: 100%; }}
+  .topk-row   {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }}
+  .topk-row img {{ width: 140px; border-radius: 4px; }}
+  .hidden {{ display: none !important; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>{title}</h1>
+  <p>{subtitle}</p>
+</header>
+<div id="controls">
+  <label>Sort by:
+    <select id="sort-sel" onchange="applySort()">
+      <option value="sel-desc">Selectivity ↓</option>
+      <option value="sel-asc">Selectivity ↑</option>
+      <option value="idx-asc">Unit index ↑</option>
+    </select>
+  </label>
+  <label>Filter unit:
+    <input id="filter-input" type="text" placeholder="e.g. 42"
+           oninput="applyFilter()" style="width:80px">
+  </label>
+  <span id="count-label" style="font-size:0.82em;color:#aaa;"></span>
+</div>
+<div id="layer-tabs">{layer_tabs}</div>
+<div id="grid"></div>
+<div id="detail-panel"></div>
+
+<script>
+const UNITS = {units_json};
+let activeLayer = UNITS.length ? UNITS[0].layer : '';
+
+function renderTabs() {{
+  const layers = [...new Set(UNITS.map(u => u.layer))];
+  document.getElementById('layer-tabs').innerHTML = layers.map(l =>
+    `<div class="tab${{l===activeLayer?' active':''}}" onclick="switchLayer('${{l}}')">${{l}}</div>`
+  ).join('');
+}}
+
+function switchLayer(l) {{
+  activeLayer = l;
+  renderTabs();
+  renderGrid();
+  document.getElementById('detail-panel').innerHTML = '';
+}}
+
+function applySort() {{ renderGrid(); }}
+function applyFilter() {{ renderGrid(); }}
+
+function visibleUnits() {{
+  const filterVal = document.getElementById('filter-input').value.trim();
+  const sortVal   = document.getElementById('sort-sel').value;
+  let units = UNITS.filter(u => u.layer === activeLayer);
+  if (filterVal !== '') units = units.filter(u => String(u.idx).includes(filterVal));
+  if (sortVal === 'sel-desc') units.sort((a,b) => b.sel - a.sel);
+  else if (sortVal === 'sel-asc') units.sort((a,b) => a.sel - b.sel);
+  else units.sort((a,b) => a.idx - b.idx);
+  return units;
+}}
+
+function renderGrid() {{
+  const units = visibleUnits();
+  document.getElementById('count-label').textContent =
+    `Showing ${{units.length}} unit(s)`;
+  document.getElementById('grid').innerHTML = units.map(u => `
+    <div class="card" data-uid="${{u.uid}}" onclick="toggleDetail('${{u.uid}}')">
+      <img src="${{u.grid_thumb}}" alt="unit ${{u.idx}}" loading="lazy">
+      <div class="card-info">
+        <span class="unit">U${{u.idx}}</span>
+        <span class="score"> sel=${{u.sel.toFixed(4)}}</span>
+      </div>
+    </div>`).join('');
+}}
+
+function toggleDetail(uid) {{
+  const panel = document.getElementById('detail-panel');
+  if (panel.dataset.uid === uid && panel.querySelector('.detail.open')) {{
+    panel.innerHTML = '';
+    panel.dataset.uid = '';
+    return;
+  }}
+  panel.dataset.uid = uid;
+  const u = UNITS.find(x => x.uid === uid);
+  if (!u) return;
+  let topkHtml = '';
+  if (u.topk_imgs && u.topk_imgs.length) {{
+    topkHtml = `<div style="width:100%"><strong>Top-${{u.topk_imgs.length}} activating samples:</strong>
+      <div class="topk-row">${{u.topk_imgs.map(src =>
+        `<img src="${{src}}" loading="lazy">`).join('')}}</div></div>`;
+  }}
+  let indivHtml = u.indiv_img
+    ? `<img src="${{u.indiv_img}}" alt="full tuning map">`
+    : '';
+  panel.innerHTML = `
+    <div class="detail open">
+      <h3>Unit ${{u.idx}} &mdash; ${{u.layer}} &mdash; selectivity ${{u.sel.toFixed(4)}}</h3>
+      ${{indivHtml}}
+      ${{topkHtml}}
+    </div>`;
+  panel.scrollIntoView({{behavior:'smooth', block:'nearest'}});
+}}
+
+renderTabs();
+renderGrid();
+</script>
+</body>
+</html>
+"""
+
+
+def generate_tuning_report(output_dir, title=None):
+    """Read an analyze_unit_tuning.py output directory and write index.html.
+
+    Reads (all relative to output_dir):
+        tuning_maps.npz            — selectivity scores, layer names, unit counts
+        tuning_grid_<layer>.png    — used as card thumbnails
+        units/<layer>/unit_NNN.png — linked from expanded card view (optional)
+        mosaics/<layer>/unit_NNN_topk.png — top-k cochleagram mosaics (optional)
+
+    Args:
+        output_dir: str — directory produced by analyze_unit_tuning.py
+        title:      str or None — report title; defaults to basename of output_dir
+    """
+    npz_path = os.path.join(output_dir, 'tuning_maps.npz')
+    if not os.path.exists(npz_path):
+        raise FileNotFoundError(
+            f'tuning_maps.npz not found in {output_dir}. '
+            'Run analyze_unit_tuning.py first.')
+
+    data  = np.load(npz_path, allow_pickle=True)
+    title = title or os.path.basename(os.path.abspath(output_dir))
+
+    # Collect layer names present in the npz
+    layer_names = [k for k in data.files if not k.endswith('_selectivity')]
+
+    all_units = []
+    for layer in layer_names:
+        tmap   = data[layer]               # (N_units, 7, 72)
+        sel_key = f'{layer}_selectivity'
+        if sel_key in data.files:
+            sel = data[sel_key]
+        else:
+            # Recompute from tuning maps if not stored
+            flat = tmap.reshape(tmap.shape[0], -1).astype(np.float64)
+            sel  = np.nanvar(flat, axis=1)
+
+        N_units = tmap.shape[0]
+        safe_layer = layer.replace('/', '_').replace(':', '_')
+
+        for unit_idx in range(N_units):
+            uid = f'{safe_layer}_u{unit_idx:04d}'
+
+            # Card thumbnail: the per-layer grid PNG (same for all units in layer)
+            grid_thumb = f'tuning_grid_{safe_layer}.png'
+
+            # Individual unit PNG (optional)
+            indiv_path = os.path.join(
+                output_dir, 'units', safe_layer, f'unit_{unit_idx:04d}.png')
+            indiv_img = (f'units/{safe_layer}/unit_{unit_idx:04d}.png'
+                         if os.path.exists(indiv_path) else '')
+
+            # Top-k mosaic PNG (optional)
+            topk_path = os.path.join(
+                output_dir, 'mosaics', safe_layer,
+                f'unit_{unit_idx:04d}_topk.png')
+            topk_imgs = ([f'mosaics/{safe_layer}/unit_{unit_idx:04d}_topk.png']
+                         if os.path.exists(topk_path) else [])
+
+            all_units.append({
+                'uid':        uid,
+                'layer':      safe_layer,
+                'idx':        int(unit_idx),
+                'sel':        float(sel[unit_idx]),
+                'grid_thumb': grid_thumb,
+                'indiv_img':  indiv_img,
+                'topk_imgs':  topk_imgs,
+            })
+
+    n_layers = len(layer_names)
+    n_units  = len(all_units)
+    subtitle = (f'{n_layers} layer(s), {n_units} unit(s) total — '
+                f'generated by analyze_unit_tuning.py')
+
+    layer_tabs_html = ''.join(
+        '<div class="tab" onclick="switchLayer(\'{}\')">'.format(
+            l.replace('/', '_').replace(':', '_')) + l + '</div>'
+        for l in layer_names)
+
+    html = _HTML_TEMPLATE.format(
+        title=title,
+        subtitle=subtitle,
+        layer_tabs=layer_tabs_html,
+        units_json=json.dumps(all_units, separators=(',', ':')),
+    )
+
+    out_path = os.path.join(output_dir, 'index.html')
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    print(f'Report written → {out_path}')
+    return out_path

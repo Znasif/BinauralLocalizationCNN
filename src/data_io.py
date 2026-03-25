@@ -143,7 +143,7 @@ def prepare_input_for_model(cochleagram, target_samples=8000):
     n_channels, n_samples, n_ears = cochleagram.shape
 
     if n_samples > target_samples * 2:
-        print(f'Downsampling cochleagram from {n_samples} to ~{target_samples} samples...')
+        #print(f'Downsampling cochleagram from {n_samples} to ~{target_samples} samples...')
         cochleagram = downsample_cochleagram(cochleagram, sr=48000, target_sr=8000)
         n_samples = cochleagram.shape[1]
 
@@ -272,10 +272,12 @@ def load_tfrecord_samples_generator(tfrecord_path, max_samples=None):
             metadata['azimuth']   = (cls % 72) * 5
             metadata['elevation'] = (cls // 72) * 10
         else:
+            # Original Francl data: train/azim and train/elev store raw degrees
+            # (0-355 and 0-60), not bin indices — no multiplication needed.
             if 'train/azim' in features:
-                metadata['azimuth']   = features['train/azim'].int64_list.value[0] * 5
+                metadata['azimuth']   = features['train/azim'].int64_list.value[0]
             if 'train/elev' in features:
-                metadata['elevation'] = features['train/elev'].int64_list.value[0] * 10
+                metadata['elevation'] = features['train/elev'].int64_list.value[0]
         if 'train/click_type' in features:
             click_val = features['train/click_type'].int64_list.value[0]
             metadata['condition'] = '1click' if click_val == 1 else '0click'
@@ -315,10 +317,12 @@ def load_tfrecord_sample(tfrecord_path, sample_index=0):
             metadata['azimuth']   = (cls % 72) * 5
             metadata['elevation'] = (cls // 72) * 10
         else:
+            # Original Francl data: train/azim and train/elev store raw degrees
+            # (0-355 and 0-60), not bin indices — no multiplication needed.
             if 'train/azim' in features:
-                metadata['azimuth']   = features['train/azim'].int64_list.value[0] * 5
+                metadata['azimuth']   = features['train/azim'].int64_list.value[0]
             if 'train/elev' in features:
-                metadata['elevation'] = features['train/elev'].int64_list.value[0] * 10
+                metadata['elevation'] = features['train/elev'].int64_list.value[0]
         if 'train/click_type' in features:
             click_val = features['train/click_type'].int64_list.value[0]
             metadata['condition'] = '1click' if click_val == 1 else '0click'

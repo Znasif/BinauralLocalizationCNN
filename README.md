@@ -96,3 +96,72 @@ python test_inference_minimal.py   --model_dir models/net1   --checkpoint experi
 python test_inference_minimal.py --model_dir models/net1 --wav_file=echo/az-100_tdist100_Idist100_fs96000.wav --plot_output=./plots/ --use_gpu
 python test_inference_minimal.py --model_dir models/net1 --wav_folder=echo/ --plot_output=./plots/ --use_gpu
 ```
+
+# Activation map visualisation (intermediate layer outputs)
+
+`--activation_output` runs on the **first input sample only** and saves one PNG per
+captured layer. Use it alongside any input mode (wav file, tfrecord, dummy).
+
+```bash
+# From a wav file (CPU, no Docker needed):
+conda activate rapids
+python test_inference_minimal.py \
+    --model_dir models/net1 \
+    --wav_file echo/az-100_tdist100_Idist100_fs96000.wav \
+    --activation_output ./activation_maps/
+
+# From a tfrecord sample (Docker, GPU):
+python test_inference_minimal.py \
+    --model_dir models/net1 \
+    --tfrecord data/train0.tfrecords \
+    --sample_index 0 \
+    --activation_output ./activation_maps/ \
+    --use_gpu
+
+# With a finetuned checkpoint:
+python test_inference_minimal.py \
+    --model_dir models/net1 \
+    --checkpoint experiments/exp02_alllayers_lr5e-5_frozenbn/checkpoints/model.ckpt-6 \
+    --wav_file echo/az-100_tdist100_Idist100_fs96000.wav \
+    --activation_output ./activation_maps/
+```
+
+## Output files
+
+All PNGs are written to the directory given by `--activation_output`.
+The filename pattern is `activation_<layer_name>.png` where `<layer_name>`
+is the TF op name with `/` and `:` replaced by `_`.
+
+Captured layer types and what they show:
+
+| Layer type | What the image shows |
+|---|---|
+| `Relu` | Post-activation feature maps — grid of freq × time images, one per channel (up to 16 shown; channels sampled evenly if more exist) |
+| `MaxPool` | Pooling outputs — same grid format but smaller spatial dimensions |
+| `Reshape` | Flattened vector just before FC layers — bar chart of all 56 320 unit values + activation distribution histogram |
+| `Softmax` | Final output — bar chart of all 504 class probabilities |
+
+Example output for the 8-conv architecture (39 freq bins × 8000 time steps input):
+
+```
+activation_maps/
+├── activation_Relu.png              ← Conv1 post-ReLU  (39 × 7993 × 32)
+├── activation_Relu_1.png            ← Conv2 post-ReLU  (39 × 7930 × 32)
+├── activation_Relu_2.png            ← Conv3 post-ReLU  (39 × 7867 × 32)
+├── activation_MaxPool.png           ← Pool1 output     (39 × 983  × 32)
+├── activation_Relu_3.png            ← Conv4 post-ReLU  (38 × 980  × 64)
+├── activation_MaxPool_1.png         ← Pool2 output     (19 × 245  × 64)
+├── activation_Relu_4.png            ← Conv5 post-ReLU  (17 × 238  × 128)
+├── activation_Relu_5.png            ← Conv6 post-ReLU  (15 × 207  × 128)
+├── activation_MaxPool_2.png         ← Pool3 output     (15 × 51   × 128)
+├── activation_Relu_6.png            ← Conv7 post-ReLU  (13 × 48   × 256)
+├── activation_Relu_7.png            ← Conv8 post-ReLU  (11 × 41   × 256)
+├── activation_MaxPool_3.png         ← Pool4 output     (11 × 20   × 256)
+├── activation_Reshape.png           ← Flatten          (56320,) bar chart
+├── activation_Relu_8.png            ← FC1  post-ReLU   (512,) bar chart
+└── activation_Softmax.png           ← Output probs     (504,) bar chart
+```
+
+> **Note:** `--activation_output` only runs on the first sample even when multiple
+> inputs are provided (e.g. `--wav_folder` or `--tfrecords_dir`). Prediction and
+> aggregate plots for all other samples are unaffected.
