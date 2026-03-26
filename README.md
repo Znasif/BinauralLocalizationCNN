@@ -21,9 +21,10 @@ To aid reproducibility and decrease setup time we provide a [Singularity Image](
 | Asset | Description |
 |---|---|
 | `models/net1/` | Original pretrained weights — read-only |
-| `data/` | Original 48kHz TFRecords — read-only |
-| `echo_finetune_tfrecords/` | Precedence-effect finetuning data — read-only |
-| `data/data_original_eval.tfrecords` | Pre-downsampled eval shard (created once below) |
+| `data/` | Original 48kHz TFRecords — read-only. Download from [Dropbox](https://www.dropbox.com/sh/af6vaotxt41i7pe/AACfTzMxMLfv-Edmn33S4gTpa?dl=0).|
+| `echo_finetune/` | Finetuning data from [outputPB_ML_stims](https://www.dropbox.com/scl/fo/4r8744qlm1dqjx64nb1hb/AM0RiUErkDmXxuIj80G6-d8?rlkey=cz8ovr4v85os7odmhxh27fls7&st=6lrussgp&dl=0). Create symbolic link to your dropbox directory "outputPB_ML_stims" such as: `ln -s /path/to/your/dropbox/outputPB_ML_stims echo_finetune` |
+| `echo_finetune_tfrecords/` | Precedence-effect finetuning data — read-only. Create from `echo_finetune` using `create_echo_finetune_tfrecords.py` |
+| `data/data_original_eval.tfrecords` | Use `create_original_eval_shard.py` to create your own |
 | `finetune_custom.py` | All options via CLI args — never duplicated |
 
 ## Experiment convention
@@ -41,11 +42,13 @@ experiments/expNN_name/
 
 ## Experiment log
 
+This is notes from an old run. Probably does not reflect the current state of the code.
+
 | Exp | Description | val acc_0click | Notes |
 |---|---|---|---|
-| [exp01](experiments/exp01_baseline_lr5e-5/notes.md) | Full finetune, lr=5e-5, 20ep | 19.57% | Baseline. Heavy overfitting. |
+| [exp01](https://github.com/znasif/BinauralLocalizationCNN/blob/08f4f832f81b7b77db52907f261e9f5c01c0bfc6/experiments/exp01_baseline_lr5e-5/notes.md) | Full finetune, lr=5e-5, 20ep | 19.57% | Baseline. Heavy overfitting. |
 
-## One-time setup — create the forgetting eval shard (run once, in Docker)
+## One-time setup — create the eval shard from original data which we will use to track catastrophic forgetting (run once, in Docker)
 ```bash
 # Inside Docker (after cd ../app and pip install):
 python create_original_eval_shard.py --data_dir data --output data/data_original_eval.tfrecords --n_records 200
@@ -141,26 +144,18 @@ Captured layer types and what they show:
 | `Reshape` | Flattened vector just before FC layers — bar chart of all 56 320 unit values + activation distribution histogram |
 | `Softmax` | Final output — bar chart of all 504 class probabilities |
 
-Example output for the 8-conv architecture (39 freq bins × 8000 time steps input):
+## Analysis output directories
 
-```
-activation_maps/
-├── activation_Relu.png              ← Conv1 post-ReLU  (39 × 7993 × 32)
-├── activation_Relu_1.png            ← Conv2 post-ReLU  (39 × 7930 × 32)
-├── activation_Relu_2.png            ← Conv3 post-ReLU  (39 × 7867 × 32)
-├── activation_MaxPool.png           ← Pool1 output     (39 × 983  × 32)
-├── activation_Relu_3.png            ← Conv4 post-ReLU  (38 × 980  × 64)
-├── activation_MaxPool_1.png         ← Pool2 output     (19 × 245  × 64)
-├── activation_Relu_4.png            ← Conv5 post-ReLU  (17 × 238  × 128)
-├── activation_Relu_5.png            ← Conv6 post-ReLU  (15 × 207  × 128)
-├── activation_MaxPool_2.png         ← Pool3 output     (15 × 51   × 128)
-├── activation_Relu_6.png            ← Conv7 post-ReLU  (13 × 48   × 256)
-├── activation_Relu_7.png            ← Conv8 post-ReLU  (11 × 41   × 256)
-├── activation_MaxPool_3.png         ← Pool4 output     (11 × 20   × 256)
-├── activation_Reshape.png           ← Flatten          (56320,) bar chart
-├── activation_Relu_8.png            ← FC1  post-ReLU   (512,) bar chart
-└── activation_Softmax.png           ← Output probs     (504,) bar chart
-```
+| | `activation_maps/` | `tuning_analysis/` | `attribution_analysis/` |
+|---|---|---|---|
+| **Question** | What does each layer's output look like? | Which units are tuned to which directions? | Which input regions caused this prediction? |
+| **Method** | Forward pass — raw activations | Forward pass × many samples — class-conditional mean activations | Backward pass — gradients from output to input |
+| **Direction** | Input → forward → visualize layers | Input → forward → aggregate stats per unit | Output → backward → trace to input |
+| **Granularity** | Single sample, all layers | All samples, per-unit aggregate | Per-sample + aggregate |
+| **Content** | 1 PNG per layer (channel mosaic) | Tuning maps (7×72 per unit), selectivity indices, top-k mosaics, HTML report | Saliency overlays, Grad-CAM ladders, FC decomposition, attention profiles |
+| **Script** | `test_inference_minimal.py` | `analyze_unit_tuning.py` | `analyze_attribution.py` |
+| **Key data** | PNGs only | `tuning_maps.npz` (unit×az×el) | `attribution_data.npz` (mean saliency by sector) |
+| **Answers** | "Layer 3 has 128 channels, here's what they look like" | "Unit 42 in pool\_2 fires most for azimuth=90°, elevation=10°" | "For this 90° sample, pool\_2 attended to freq bins 15–22 because of ILD cues" |
 
 > **Note:** `--activation_output` only runs on the first sample even when multiple
 > inputs are provided (e.g. `--wav_folder` or `--tfrecords_dir`). Prediction and
