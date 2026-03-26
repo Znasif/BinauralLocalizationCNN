@@ -135,6 +135,10 @@ All PNGs are written to the directory given by `--activation_output`.
 The filename pattern is `activation_<layer_name>.png` where `<layer_name>`
 is the TF op name with `/` and `:` replaced by `_`.
 
+> `--activation_output` only runs on the first sample even when multiple
+> inputs are provided (e.g. `--wav_folder` or `--tfrecords_dir`). Prediction and
+> aggregate plots for all other samples are unaffected.
+
 Captured layer types and what they show:
 
 | Layer type | What the image shows |
@@ -157,6 +161,8 @@ Captured layer types and what they show:
 | **Key data** | PNGs only | `tuning_maps.npz` (unit×az×el) | `attribution_data.npz` (mean saliency by sector) |
 | **Answers** | "Layer 3 has 128 channels, here's what they look like" | "Unit 42 in pool\_2 fires most for azimuth=90°, elevation=10°" | "For this 90° sample, pool\_2 attended to freq bins 15–22 because of ILD cues" |
 
-> **Note:** `--activation_output` only runs on the first sample even when multiple
-> inputs are provided (e.g. `--wav_folder` or `--tfrecords_dir`). Prediction and
-> aggregate plots for all other samples are unaffected.
+> **Note:** 
+> Refer to [deepSTRF](https://github.com/urancon/deepSTRF/tree/develop) for pytorch and [Earshot](https://pmc.ncbi.nlm.nih.gov/articles/PMC12331064/#notes1) for Keras based implementations that are more recent and show a wide range of Stateless and Stateful architectures but not for Binaural Localization.
+
+> **Note:** 
+> Old localization based RNNs may be found by searching for DCASE Challenges such as [SELD-DCASE 2019](https://github.com/yinkalario/Two-Stage-Polyphonic-Sound-Event-Detection-and-Localization), [SELD-DCASE 2020](https://github.com/thomeou/General-network-architecture-for-sound-event-localization-and-detection) or [SELD-DCASE 2023](https://github.com/sharathadavanne/seld-dcase2023?tab=readme-ov-file).
